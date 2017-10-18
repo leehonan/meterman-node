@@ -1,0 +1,157 @@
+EESchema Schematic File Version 2
+LIBS:power
+LIBS:device
+LIBS:transistors
+LIBS:conn
+LIBS:linear
+LIBS:regul
+LIBS:74xx
+LIBS:cmos4000
+LIBS:adc-dac
+LIBS:memory
+LIBS:xilinx
+LIBS:microcontrollers
+LIBS:dsp
+LIBS:microchip
+LIBS:analog_switches
+LIBS:motorola
+LIBS:texas
+LIBS:intel
+LIBS:audio
+LIBS:interface
+LIBS:digital-audio
+LIBS:philips
+LIBS:display
+LIBS:cypress
+LIBS:siliconi
+LIBS:opto
+LIBS:atmel
+LIBS:contrib
+LIBS:valves
+LIBS:em
+LIBS:Puck-cache
+EELAYER 25 0
+EELAYER END
+$Descr A4 11693 8268
+encoding utf-8
+Sheet 1 1
+Title "Horus Puck"
+Date "2017-07-26"
+Rev "2"
+Comp "Design by Lee Honan (lee@leehonan.com)"
+Comment1 ""
+Comment2 ""
+Comment3 ""
+Comment4 ""
+$EndDescr
+$Comp
+L CONN_01X04 J1
+U 1 1 593F9CD4
+P 5650 4050
+F 0 "J1" H 5650 4300 50  0000 C CNN
+F 1 "CONN_TRRS" V 5750 4050 50  0000 C CNN
+F 2 "Energy_Mon:TRRS_Jack" H 5650 4050 50  0001 C CNN
+F 3 "" H 5650 4050 50  0001 C CNN
+	1    5650 4050
+	-1   0    0    -1  
+$EndComp
+$Comp
+L R_PHOTO R1
+U 1 1 593F9D2C
+P 6650 3750
+F 0 "R1" H 6700 3800 50  0000 L CNN
+F 1 "R_PHOTO" H 6700 3750 50  0000 L TNN
+F 2 "Opto-Devices:Resistor_LDR_5x4.1_RM3" V 6700 3500 50  0001 L CNN
+F 3 "" H 6650 3700 50  0001 C CNN
+	1    6650 3750
+	1    0    0    -1  
+$EndComp
+$Comp
+L LED D1
+U 1 1 593F9D5B
+P 6400 4450
+F 0 "D1" H 6400 4550 50  0000 C CNN
+F 1 "LED" H 6400 4350 50  0000 C CNN
+F 2 "LEDs:LED-5MM" H 6400 4450 50  0001 C CNN
+F 3 "" H 6400 4450 50  0001 C CNN
+	1    6400 4450
+	1    0    0    -1  
+$EndComp
+Wire Wire Line
+	5850 4200 6250 4200
+Wire Wire Line
+	6250 4200 6250 4450
+Wire Wire Line
+	5850 4100 6550 4100
+Wire Wire Line
+	6550 4100 6550 4450
+Wire Wire Line
+	6050 3600 6650 3600
+Text Label 6300 3700 0    60   ~ 0
+3V3
+Wire Wire Line
+	5850 4000 6650 4000
+Wire Wire Line
+	6650 4000 6650 3900
+Text Label 6150 4000 0    60   ~ 0
+PR_V_DIV>>D3
+Text Label 6550 4300 0    60   ~ 0
+LED<<D4
+Text Label 6250 4300 0    60   ~ 0
+GND
+$Comp
+L GND #PWR01
+U 1 1 593F9F37
+P 6100 4550
+F 0 "#PWR01" H 6100 4300 50  0001 C CNN
+F 1 "GND" H 6100 4400 50  0000 C CNN
+F 2 "" H 6100 4550 50  0001 C CNN
+F 3 "" H 6100 4550 50  0001 C CNN
+	1    6100 4550
+	1    0    0    -1  
+$EndComp
+$Comp
+L +3V3 #PWR02
+U 1 1 593F9F54
+P 6100 3600
+F 0 "#PWR02" H 6100 3450 50  0001 C CNN
+F 1 "+3V3" H 6100 3740 50  0000 C CNN
+F 2 "" H 6100 3600 50  0001 C CNN
+F 3 "" H 6100 3600 50  0001 C CNN
+	1    6100 3600
+	1    0    0    -1  
+$EndComp
+$Comp
+L PWR_FLAG #3V03
+U 1 1 593F9F71
+P 6050 3600
+F 0 "#3V03" H 6050 3675 50  0001 C CNN
+F 1 "PWR_FLAG" H 6050 3750 50  0000 C CNN
+F 2 "" H 6050 3600 50  0001 C CNN
+F 3 "" H 6050 3600 50  0001 C CNN
+	1    6050 3600
+	0    -1   -1   0   
+$EndComp
+$Comp
+L PWR_FLAG #FLG04
+U 1 1 593F9FA7
+P 6050 4450
+F 0 "#FLG04" H 6050 4525 50  0001 C CNN
+F 1 "PWR_FLAG" H 6050 4600 50  0000 C CNN
+F 2 "" H 6050 4450 50  0001 C CNN
+F 3 "" H 6050 4450 50  0001 C CNN
+	1    6050 4450
+	0    -1   -1   0   
+$EndComp
+Wire Wire Line
+	6100 4550 6100 4200
+Connection ~ 6100 4200
+Wire Wire Line
+	6050 4450 6100 4450
+Connection ~ 6100 4450
+Connection ~ 6100 3600
+Wire Wire Line
+	6100 3600 6100 3900
+Wire Wire Line
+	6100 3900 5850 3900
+$EndSCHEMATC
