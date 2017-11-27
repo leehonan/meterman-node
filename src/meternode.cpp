@@ -167,12 +167,17 @@ static const uint8_t RADIO_SS_PIN = 10;         // IC16
 
 static const uint8_t PR_INTERRUPT_PIN = 3;      // IC5
                                                 // uses 328P interrupt 1
+
 static const uint8_t PUCK_LED_PIN = 4;          // IC6
+
 static const uint8_t RTC_SS_PIN = 7;            // IC13
                                                 // HIGH is off, LOW on
+
 static const uint8_t BUTTON_PIN = 6;            // IC12
                                                 // auxiliary button
+
 static const uint8_t VIN_DIV_PIN = A0;          // IC23
+
 static const uint8_t CT_CLAMP_PIN = A1;         // IC24
 
 // *****************************************************************************
@@ -1450,7 +1455,7 @@ void getConfigFromMem(){
     uint8_t byteValArray[KEY_LENGTH] = {0};
     bool EEPROMValid = true;
 
-    writeLogLnF(F("Reading ROM"), logInfo);
+    writeLogLnF(F("Read ROM"), logInfo);
     wdt_reset();
     EEPROM.get(eeAddress, byteVal);
     if (byteVal >= logNull && byteVal <= logDebug)
@@ -1606,7 +1611,7 @@ void applyRadioConfig(){
 
     radio.sleep();
 
-    // hack - restore time
+    // hack - restore time, seems to be SPI issue
     setNowTimestampSec(tmpTime, false, false);
 }
 
@@ -2228,7 +2233,7 @@ void processMsgRecv(){
              writeLogLnF(F("s"), logInfo);
          }
          else
-             writeLogLnF(F("Got invalid GITR"), logError);
+             writeLogLnF(F("Got bad GITR"), logError);
     }
 
     //  MVAI:
@@ -2250,7 +2255,7 @@ void processMsgRecv(){
             sendRebase = true;
         }
         else
-            writeLogLnF(F("Got invalid MVAI"), logError);
+            writeLogLnF(F("Got bad MVAI"), logError);
     }
 
     // MINI:
@@ -2272,7 +2277,7 @@ void processMsgRecv(){
                 putConfigToMem();
             }
             else
-                writeLogLnF(F("Got invalid MINI"), logError);
+                writeLogLnF(F("Got bad MINI"), logError);
         }
 
     // MPLI:
@@ -2299,7 +2304,7 @@ void processMsgRecv(){
             putConfigToMem();
         }
         else
-            writeLogLnF(F("Got invalid MPLI"), logError);
+            writeLogLnF(F("Got bad MPLI"), logError);
     }
 
     // PRSP:
