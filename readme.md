@@ -2,7 +2,7 @@
 
 This repo contains PCB designs and firmware for a low-cost, low-power, wireless LED pulse meter node.  It was designed to read and transmit energy consumption from an electricity smart meter LED pulses, but could be used for other LED pulse counting applications.  
 
-<img src="assets/images/meternode_smartmeter_1.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_smartmeter_1.jpg" alt="Image" style="width: 400px;"/>
 
 This 'MeterNode' is part of a basic electricity monitoring system described at http://leehonan.com/meterman.  The 'MeterMan' system consists of:
 
@@ -29,16 +29,16 @@ All contents are licenced according to the MIT licence.
 ## MeterNode Overview
 The image below shows a partially-populated MeterNode installed in a project box with a 3xAA battery holder (empty space at bottom left due to omitting CT and DC power sub-circuits).
 
-<img src="assets/images/meternode_install_3.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_install_3.jpg" alt="Image" style="width: 400px;"/>
 
 The MeterNode's companion 'Puck' is a peripheral pulse sensor (not really in the shape of a puck - although that was the original idea).  It has a photoresistor on one side, and a red 'super bright' LED on the other.  The photoresistor is placed over the smart meter's 'consumption' LED, and connected to the monitoring MeterNode using a TRS or TRRS 3.5mm cable (with a 3.5mm TRRS jack on each PCB).  
 
 <table><tr>
 <td align="center">
-<img src="assets/images/meternode_puck_top.jpg" alt="Image" style="width: 200px;"/>
+<img src="images/meternode_puck_top.jpg" alt="Image" style="width: 200px;"/>
 </td>
 <td align="center">
-<img src="assets/images/meternode_puck_bottom.jpg" alt="Image" style="width: 200px;"/>
+<img src="images/meternode_puck_bottom.jpg" alt="Image" style="width: 200px;"/>
 </td>
 </tr></table>
 
@@ -65,10 +65,10 @@ The following images show a fully-populated MeterNode, with a DC jack and CT Cla
 
 <table><tr>
 <td align="center">
-<img src="assets/images/meternode_install_1.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_install_1.jpg" alt="Image" style="width: 400px;"/>
 </td>
 <td align="center">
-<img src="assets/images/meternode_install_2.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_install_2.jpg" alt="Image" style="width: 400px;"/>
 </td>
 </tr></table>
 
@@ -127,10 +127,10 @@ The MeterNode cannot:
 The MeterNode PCB has the following switches, buttons, headers, and adjustable components.  These are shown below.
 <table><tr>
 <td align="center">
-<img src="assets/images/meternode_install_4.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_install_4.jpg" alt="Image" style="width: 400px;"/>
 </td>
 <td align="center">
-<img src="assets/images/meternode_install_5.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_install_5.jpg" alt="Image" style="width: 400px;"/>
 </td>
 </tr></table>
 
@@ -291,20 +291,20 @@ The code is fairly well-documented so isn't covered further here.
 
 The MeterNode PCB measures 60x92mm and is designed to fit a widely-available [100x68x50mm 'project box'](https://www.banggood.com/White-Plastic-Waterproof-Electronic-Case-PCB-Box-100x68x50mm-p-948109.html), shown below.
 
-<img src="assets/images/meternode_box.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_box.jpg" alt="Image" style="width: 400px;"/>
 
 The MeterNode's companion Puck PCB measures 15x20mm and can be mounted in a 3D-printed case (also in this repo).  The puck can be easily aligned with the meter's consumption LED by adhering the base/case only (positioning its hole directly over the LED) before completing the assembly.
 
-<img src="assets/images/meternode_puck_house_1.jpg" alt="Image" style="width: 200px;"/>
+<img src="images/meternode_puck_house_1.jpg" alt="Image" style="width: 200px;"/>
 
 The images below show regular pucks both assembled and disassembled, along with an alternate puck configuration, where the black 'collet' piece shown (.STL included) can be used to position the LDR sensor in tight positions.  The protruding arm is used to adhere the sensor (e.g. using double-sided tape).  The particular meter that necessitated this was the iCredit 500 which has its LED tucked into a tight corner.
 
 <table><tr>
 <td align="center">
-<img src="assets/images/meternode_puck_house_2.jpg" alt="Image" style="width: 200px;"/>
+<img src="images/meternode_puck_house_2.jpg" alt="Image" style="width: 200px;"/>
 </td>
 <td align="center">
-<img src="assets/images/meternode_puck_house_3.jpg" alt="Image" style="width: 200px;"/>
+<img src="images/meternode_puck_house_3.jpg" alt="Image" style="width: 200px;"/>
 </td>
 </tr></table>
 
@@ -314,7 +314,7 @@ The Puck Schematic & PCB is straightforward, so isn't discussed further here - e
 
 <img src="pcb_meter_node/schematic.png" alt="Image" style="width: 1000px;"/>
 
-<img src="assets/images/meternode_pcb.jpg" alt="Image" style="width: 800px;"/>
+<img src="images/meternode_pcb.jpg" alt="Image" style="width: 800px;"/>
 
 The PCB design minimises the use of SMT components, and uses through-hole instead.  When I originally designed the board I wanted to make it 'hobbyist-friendly' with the only SMT component being the easily-solderable RFM69 and RP-SMA connector.  However in subsequent iterations I added the RTC and comparator, where the best choices were SMT.  This makes the board a hodge-podge, and annoying to make in volume (as I have had to for a few experiments). I may do an SMT-only variant in the future.
 
