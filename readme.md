@@ -295,7 +295,7 @@ The MeterNode PCB measures 60x92mm and is designed to fit a widely-available [10
 
 The MeterNode's companion Puck PCB measures 15x20mm and can be mounted in a 3D-printed case (also in this repo).  The puck can be easily aligned with the meter's consumption LED by adhering the base/case only (positioning its hole directly over the LED) before completing the assembly.
 
-<img src="images/meternode_puck_house_1.jpg" alt="Image" style="width: 200px;"/>
+<img src="images/meternode_puck_house_1.jpg" alt="Image" style="width: 300px;"/>
 
 The images below show regular pucks both assembled and disassembled, along with an alternate puck configuration, where the black 'collet' piece shown (.STL included) can be used to position the LDR sensor in tight positions.  The protruding arm is used to adhere the sensor (e.g. using double-sided tape).  The particular meter that necessitated this was the iCredit 500 which has its LED tucked into a tight corner.
 
