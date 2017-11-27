@@ -3,18 +3,19 @@
     METERMAN METERNODE
     meternode.cpp
     =========
+
     Operates a 'pulse meter node' that counts and records LED pulses into 'read
     entries', corresponding to a set interval (e.g. a 15s period).  These
-    entries are periodically transmitted to a receiver(s) over packet radio.
-    The meter node device this code was written for is designed for
-    non-invasive, 'permissionless' monitoring of electricity smart meters, but
-    the code and meter node device could be used to count the pulsing of any
-    LED.  A CT clamp circuit is also included for reading AC current.
+    entries are periodically transmitted to a receiver(s) over packet radio. The
+    meter node device this code was written for is designed for non-invasive,
+    'permissionless' monitoring of electricity smart meters, but the code and
+    meter node device could be used to count the pulsing of any LED (with minor
+    code changes).  A CT clamp circuit is also included for reading AC current.
 
     The meter node has a corresponding gateway receiver, which takes the form of
     a Raspberry Pi 'Hat' (daughterboard).  This gateway could aggregate multiple
     nodes. These are part of a basic monitoring system as described at
-    http://leehonan.com/meterman.
+    http://leehonan.com/meterman.  Repos are at http://github.com/leehonan.
 
     The meter node can be interacted with over serial (FTDI) and also packet
     radio messages.
@@ -24,8 +25,9 @@
     voltage divider, FTDI header, a sub-circuit to integrate a 'puck' that goes
     over the LED being counted, and a CT clamp sub-circuit for AC current
     sensing.  The puck attaches using a cable and consists of a photoresistor
-    and a LED that flashes in unison with the smart meter's LED (other modes are
-    configurable, including turning this off to conserve battery - recommended).
+    and a LED that can flash in unison with the smart meter's LED (other modes
+    are configurable, including turning this off to conserve battery -
+    recommended).
 
     Uses the following libraries (with licencing):  RadioHead (GPL Version 2
     Licence), PCF2123 (MIT Licence), LowPower (Creative Commons
@@ -64,7 +66,7 @@
 //    'DEF_*' constants are defaults for configuration variables of the same
 //    name. Most of these will be stored to EEPROM and can be updated by
 //    serial terminal commands.
-
+//
 //    Have minimised use of #DEFINE, #IFDEF etc for easier debugging.
 // *****************************************************************************
 
@@ -86,10 +88,7 @@
 // https://github.com/openenergymonitor/EmonLib
 #include <EmonLib.h>
 
-static const int8_t FW_VERSION = 3;
-// TODO: test/prove CT code (circuit works)
-// TODO: debug crazy time setting on isolated nodes (e.g. 2093-00-05 13:42:21) -
-//          PREQ failure?
+static const int8_t FW_VERSION = 6;
 
 // Log Levels
 typedef enum {
@@ -102,10 +101,10 @@ typedef enum {
 
 // Default runtime log level.
 // Can control through serial command, save to EEPROM.
-static const LogLev DEF_LOG_LEVEL = logDebug;
+static const LogLev DEF_LOG_LEVEL = logInfo;
 
 // if using HW/HCW module, must set to true
-static const bool RADIO_HIGH_POWER = false;
+static const bool RADIO_HIGH_POWER = false;     // RFM69W is standard
 
 // Initial power level in dBm.  Use -18 to +13 for W/CW, -14 to +20 for HW/HCW:
 static const int8_t DEF_TX_POWER = 0;
@@ -136,21 +135,25 @@ static const uint32_t SERIAL_BAUD = 115200;
 
 // config whether node can sleep
 static const bool SLEEP_ENABLED = true;
-bool canSleep = true;   // used at runtime if SLEEP_ENABLED
+bool canSleep = SLEEP_ENABLED;   // used at runtime if SLEEP_ENABLED
 
-// Default meter unit.  Unit of measure for pulse count, only used for logging,
-// display, etc - intelligence is at consumer/Gateway.  E.g. "Wh", "*0.1Wh",
-// "mls"
-static const char DEF_METER_UNIT[KEY_LENGTH] = {"Wh"};
+// Default meter LED impulses per kWh.  Usually 1000, 3200, or 3600.  Must
+// be between 1 and 60,000.  All energy values communicated and displayed by
+// the meternode are in watt-hours (Wh), although internal storage is a simple
+// impulse count.
+static const uint16_t DEF_METER_IMP_PER_KWH = 1000;
 
 // Meter interval resolution in seconds.  This sets the period (max 255s) over
 // which reads are accumulated into a single 'reading' - e.g. at 5s a read entry
 // will represent 5s of reads (not less, sometimes more with sleep causing
 // processing latency). Setting this to 0 will disable intervals, there will be
 // one entry per read.
-static const uint8_t DEF_METER_INT_RES_SEC = 30;
+// The product of the meter interval and number of interval entries per meter
+// update message should  be significantly less than the 'node dark' threshold
+// set at the gateway.
+static const uint8_t DEF_METER_INT_RES_SEC = 60;
 
-static const bool CT_ENABLED = false;
+static const bool CT_ENABLED = true;
 
 // *****************************************************************************
 //    General Init - Pins
@@ -185,20 +188,22 @@ bool btnAdjustMode = false;         // whether adjustment mode is active
 
 // Message delays are effectively a minimum, and are approximate due to sleep.
 // In practice, if meter LED pulses frequently enough to trigger PR interrupt
-// every few seconds then variances will be slight.
+// at least every few seconds then variances will be slight.
 
-// Seconds delay between sending out instruction request messages - keep
-// reasonably short (e.g. 60s) as act as useful heartbeat also used to trigger
-// general check (beforehand) for any new unsolicited messages.
-static const uint16_t GINR_MSG_INTERVAL_SEC = 120;
+// Seconds delay between sending out instruction request messages, and checking
+// for a response.
+static const uint16_t DEF_GINR_MSG_INTERVAL_SEC = 600;
+uint16_t ginrMsgIntervalSec = DEF_GINR_MSG_INTERVAL_SEC;
+uint16_t tmpGinrPollPeriod = 0;
 
 // seconds delay between sending out clock sync ping request messages. Also
 // fires at startup.
-static const uint16_t PING_MSG_INTERVAL_SEC = 900;
+static const uint16_t PING_MSG_INTERVAL_SEC = 900;      // 15m
 
 // global temporary variables, used somewhat arbitrarily vs local static vars
 char tmpStr[40] = "";
 uint32_t tmpInt = 0ul;
+uint32_t tmpTime = 0ul;
 
 // buffer for serial input/output, serial buffer position pointer
 static const uint8_t SERIAL_IN_BUFFER_SIZE = 40;
@@ -225,7 +230,7 @@ uint8_t cfgNetworkId4 = 0;
 uint8_t cfgEncryptKey[KEY_LENGTH] =
         {'\0','\0','\0','\0','\0','\0','\0','\0','\0','\0','\0','\0','\0',
         '\0','\0','\0'};
-char cfgMeterUnit[KEY_LENGTH] = {""};  // one less with null-terminator
+uint16_t cfgMeterImpPerKwh = 0;
 uint8_t cfgMeterInterval = 0;
 
 // *****************************************************************************
@@ -286,8 +291,8 @@ static const char SER_CMD_TXPW[] PROGMEM = "TXPW";
 // print/set meter value (set with MTRV=[meter value])
 static const char SER_CMD_MTRV[] PROGMEM = "MTRV";
 
-// print/set meter unit (set with MTRU=[meter units])
-static const char SER_CMD_MTRU[] PROGMEM = "MTRU";
+// print/set meter impulse per kWh rate (set with MTRR=[impulse count])
+static const char SER_CMD_MTRR[] PROGMEM = "MTRR";
 
 // print/set meter interval (set with MTRI=[meter interval in sec])
 static const char SER_CMD_MTRI[] PROGMEM = "MTRI";
@@ -305,7 +310,7 @@ static const char SER_CMD_LEDT[] PROGMEM = "LEDT";
 const char* const SER_CMDS[] PROGMEM = {SER_CMD_HELP, SER_CMD_SLEEP,
         SER_CMD_DUMP, SER_CMD_RCFG, SER_CMD_TIME, SER_CMD_LOGL, SER_CMD_EKEY,
         SER_CMD_NETI, SER_CMD_GWID, SER_CMD_NOID, SER_CMD_TRSS, SER_CMD_TXPW,
-        SER_CMD_MTRV, SER_CMD_MTRU, SER_CMD_MTRI, SER_CMD_TEST, SER_CMD_LEDR,
+        SER_CMD_MTRV, SER_CMD_MTRR, SER_CMD_MTRI, SER_CMD_TEST, SER_CMD_LEDR,
         SER_CMD_LEDT};
 
 // *****************************************************************************
@@ -323,6 +328,9 @@ static const char RMSG_MUP_[] PROGMEM = "MUP_";
 
 // Instruction Request to Gateway
 static const char RMSG_GINR[] PROGMEM = "GINR";
+
+// Request from Gateway to temporarily increase GINR polling rate
+static const char RMSG_GITR[] PROGMEM = "GITR";
 
 // Clock Sync Ping Request to Gateway
 static const char RMSG_PREQ[] PROGMEM = "PREQ";
@@ -396,7 +404,7 @@ uint16_t vinVoltageMV = 0;
 EnergyMonitor emon1;
 static const float CT_IRMS_CORRECT_MULT = 111.1;
 static const float CT_AC_VOLTAGE = 230.0;
-static const double CT_IRMS_HIGH_PASS = 0.2;
+static const double CT_IRMS_HIGH_PASS = 0.2;  // seems unreliable below 0.2
 static const int16_t CT_NUM_SAMPLES = 1480;   // proportionate to AC cycle, freq
 
 // *****************************************************************************
@@ -424,8 +432,8 @@ static const float RADIO_FREQ = 915.0f;
 //Using FSK, Whitening, bit rate = 125kbps, modulation frequency = 125kHz.
 static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb125Fd125;
 
-// Transmit and Receive timeouts (millis).  Long timeouts can make serial
-// communication etc laggy if gateway not up.
+// Transmit and Receive timeouts (millis).  Long timeouts can block processing
+//  if gateway not up.
 static const uint16_t TX_TIMEOUT = 500;
 static const uint16_t RX_TIMEOUT = 800;
 
@@ -472,22 +480,32 @@ uint8_t radioMsgBuff[RH_RF69_MAX_MESSAGE_LEN] = "";
 // *****************************************************************************
 
 // Test settings.  Toggled via TESTMODE serial commmand, simulates meter LED
-// pulses at TEST_METER_PULSE_INTERVAL (minimum delay between pulses) with
-// TEST_METER_PULSE_TIME setting the duration of the pulse itself (pulse width).
+// pulses at TEST_METER_IMP_INTERVAL (minimum delay between pulses) with
+// TEST_METER_IMP_TIME setting the duration of the pulse itself (pulse width).
 bool testMode = false;
-static const uint16_t TEST_METER_PULSE_INTERVAL = 1000;     // millis
-static const uint16_t TEST_METER_PULSE_TIME = 10;           // millis
+static const uint16_t TEST_METER_IMP_INTERVAL = 1000;     // millis
+static const uint16_t TEST_METER_IMP_TIME = 10;           // millis
 bool testPulseOn = false;
 uint32_t whenTestPulseChange = 0ul;                         //millis
 
-// Maximum meter value => 4 billion entries (which may be greater than number of
-// pulses depending on interval setting).  UL type will overflow at ~4.3
-// billion. Could use long long but constrained to limit message size.
-static const uint32_t METER_MAX_VALUE = 4000000000ul;
+// Align reads (used to align intervals to mm:00 when setting time)
+bool alignReads = true;
+uint32_t alignReadingFrom = 0ul; // timestamp
+
+// A Wh base value is used to allow the meter's impulse count values to be
+// cumulative, but small.  These are converted to Wh and added the base value
+// for display or communication.
+uint32_t meterBaseValue = 0ul;    // Wh
+
+// Maximum meter base value => 3 billion Wh (3GWh).
+// Maximum meter value => 4.2 billion Wh (4.2GWh).
+// UL type will overflow at ~4.3 billion.
+static const uint32_t METER_MAX_BASE_VALUE = 3000000000ul;
+static const uint32_t METER_MAX_VALUE = 4200000000ul;
 
 // max of 255 with unsigned short 'pointers'; little benefit in making
 // longer than ~10 as is redundant on message send
-static const uint8_t METER_READ_BUFFER_LEN = 10;
+static const uint8_t METER_ENTRY_BUFFER_LEN = 10;
 
 typedef enum {
     entryNull = 0,
@@ -496,40 +514,42 @@ typedef enum {
     entrySent = 3           // entry sent
 } MeterEntryState;
 
-// Meter buffer is a ring buffer (circular queue) to hold last 'n' read entries
-// with accumulation meter value and time, with oldest element being overwritten
-// on overflow.
+// Meter buffer is a ring buffer (circular queue) to hold last 'n' meter entries
+// with accumulated impulse count and time, with oldest element being overwritten
+// on overflow.  If an interval of > 0 is set, these will be interval entries
+// (not discrete reads)
+
 // Time is since UNIX epoch, resolution is seconds; as millis is
 // challenged by RTC resolution, message sizes, and effects of sleeping on
-// timers.  Could tack millis on but little value.
+// timers.
 
-struct MeterRead {
-   uint32_t readTime = 0;
-   uint32_t meterValue = 0;     // accumulated meter value
+struct MeterEntry {
+   uint32_t entryStartTime = 0;
+   uint32_t meterImpCount = 0;     // accumulated impulse count
    double rmsCurrent = 0.00;    // current at interval close
    MeterEntryState entryState = entryNull;
 };
 
 // Ring buffer and associated vars are not volatile as accessed asynchronously
 // to interrupt processing (which updates newRawMeterReads)
-struct MeterRead meterReadBuffer[METER_READ_BUFFER_LEN];
+struct MeterEntry MeterEntryBuffer[METER_ENTRY_BUFFER_LEN];
 
 // Number of new meter 'closed' entries, ready to be 'popped' off the buffer
-uint16_t newClosedMeterEntries = 0;
+uint8_t newClosedMeterEntries = 0;
 
 // Number of new raw meter readings, ready to be 'pushed' to the buffer
-volatile uint32_t newRawMeterReads = 0;
+volatile uint16_t newRawMeterReads = 0;
 
-// global var for temporary MeterRead object
-struct MeterRead tmpRead;
+// global var for temporary MeterEntry object
+struct MeterEntry tmpRead;
 
 // Global var.  If true, will force a 'rebase' message to be sent ASAP;
 // indicating that time or meter count have been reset.  Recipient should not
 // rely on this, at least alerting on big jumps forward, or reversions in time
 // or meter values.
-bool forceRebase = false;
+bool sendRebase = false;
 
-// Meter Read Buffer 'read pointer' - next index to read from buffer (oldest
+// Meter Entry Buffer 'read pointer' - next index to read from buffer (oldest
 // read) despite reference to 'pop' elements are left as-is until they are
 // overwritten
 uint8_t mrbPopNext = 0;
@@ -553,20 +573,20 @@ static const uint8_t MAX_METER_MSG_INTERVAL_SEC = 180;
 // MAX_METER_MSG_INTERVAL_SEC in a single message, ignoring older reads.
 static const bool SEND_METER_TIMER_ONLY = false;
 
-// The number of 'watched meter' LED flash/pulses per 'puck' LED flash in
+// The number of 'watched meter' LED flash/impulses per 'puck' LED flash in
 // response.  E.g. could flash once every 10 to consume battery.  0 means LED is
 // disabled (except to indicate boot).
-static const uint8_t DEF_METER_PULSES_PER_LED_PULSE = 0;
+static const uint8_t DEF_METER_IMP_PER_LED_PULSE = 0;
 
 volatile uint32_t whenPuckLEDOn = 0ul;  //millis
 
 // runtime var to implement pulse rate
-volatile uint8_t ledPulseCountdown = DEF_METER_PULSES_PER_LED_PULSE;
+volatile uint8_t ledPulseCountdown = DEF_METER_IMP_PER_LED_PULSE;
 
 // The max duration of each LED pulse emitted by the puck in millis. Setting to
 // 0 will cause to flash in unison with meter.  Maximum of 3000, but will always
 // go low/off on falling edge of meter's pulse.
-static const uint16_t DEF_LED_PULSE_TIME_MS = 100;
+static const uint16_t DEF_LED_IMP_TIME_MS = 100;
 
 // *****************************************************************************
 //    RTC & Timers
@@ -581,7 +601,8 @@ static const uint8_t SYNC_TIME_MAX_DRIFT_SEC = 3;
 
 // Default UNIX epoch time in case RTC has an invalid timestamp and needs to be
 // re-initialised.
-static const int32_t INIT_TIME = 1483228800ul;        //  1 Jan 2017 00:00:00
+static const uint32_t INIT_TIME = 1483228800ul;        //  1 Jan 2017 00:00:00
+static const uint32_t MAX_TIME = 2524608000ul;        //  1 Jan 2050 00:00:00
 
 // Global timestamp vars.  Timestamps are UNIX epoch in seconds (since 1 Jan
 // 1970 00:00:00).
@@ -590,6 +611,7 @@ uint32_t whenLastGInstMsg = 0ul;
 uint32_t whenLastPingMsg = 0ul;
 uint32_t whenLastMeterMsg = 0ul;
 uint32_t whenLastTXPowCheck = 0ul;
+uint32_t whenTmpGinrStart = 0ul;
 uint32_t secondsSlept = 0ul;
 
 // *****************************************************************************
@@ -601,9 +623,11 @@ uint32_t secondsSlept = 0ul;
 bool newLogLine = true;
 
 
-void printNewLine(){
-    Serial.write("\r\n");
-    newLogLine = true;
+void printNewLine(LogLev logLevel){
+    if (cfgLogLevel >= logLevel){
+        Serial.write("\r\n");
+        newLogLine = true;
+    }
 }
 
 
@@ -615,7 +639,7 @@ void print_P(const char* flashStr){
 
 void println_P(const char* flashStr){
     print_P(flashStr);
-    printNewLine();
+    printNewLine(logNull);
 }
 
 
@@ -656,7 +680,7 @@ void writeLogLn(char* debugText, LogLev logLevel){
         if (newLogLine)
             printLogLevel(logLevel, true);
         Serial.write(debugText);
-        printNewLine();
+        printNewLine(logLevel);
     }
 }
 
@@ -668,7 +692,7 @@ void writeLog(const char* debugText, LogLev logLevel){
 
 void writeLogLn(const char* debugText, LogLev logLevel){
     writeLog(debugText, logLevel);
-    printNewLine();
+    printNewLine(logLevel);
 }
 
 
@@ -681,7 +705,7 @@ void writeLog(uint32_t debugText, LogLev logLevel){
 
 void writeLogLn(uint32_t debugText, LogLev logLevel){
     writeLog(debugText, logLevel);
-    printNewLine();
+    printNewLine(logLevel);
 }
 
 
@@ -692,7 +716,7 @@ void writeLog(uint16_t debugText, LogLev logLevel){
 
 void writeLogLn(uint16_t debugText, LogLev logLevel){
     writeLog((uint32_t)debugText, logLevel);
-    printNewLine();
+    printNewLine(logLevel);
 }
 
 
@@ -705,7 +729,7 @@ void writeLog(int32_t debugText, LogLev logLevel){
 
 void writeLogLn(int32_t debugText, LogLev logLevel){
     writeLog(debugText, logLevel);
-    printNewLine();
+    printNewLine(logLevel);
 }
 
 
@@ -716,7 +740,7 @@ void writeLog(int16_t debugText, LogLev logLevel){
 
 void writeLogLn(int16_t debugText, LogLev logLevel){
     writeLog((int32_t)debugText, logLevel);
-    printNewLine();
+    printNewLine(logLevel);
 }
 
 
@@ -731,7 +755,7 @@ void writeLog(double debugText, LogLev logLevel){
 
 void writeLogLn(double debugText, LogLev logLevel){
     writeLog(debugText, logLevel);
-    printNewLine();
+    printNewLine(logLevel);
 }
 
 
@@ -752,7 +776,7 @@ void writeLogLnF(const __FlashStringHelper* debugText, LogLev logLevel){
             printLogLevel(logLevel, true);
         Serial.print(debugText);
     }
-    printNewLine();
+    printNewLine(logLevel);
 }
 
 
@@ -765,6 +789,7 @@ void writeLogLnF(const __FlashStringHelper* debugText, LogLev logLevel){
 uint32_t getNowTimestampSec();
 void resetConfig();
 void sendRadioMsg(uint8_t recipient, bool checkReply);
+uint8_t strStartsWithP(const char *strBody, const char *strPrefix);
 
 
 void print2Digits(int digits){
@@ -791,19 +816,32 @@ void printNetworkId(){
 }
 
 
-void printUnits(){
-    writeLog(cfgMeterUnit, logNull);
+uint32_t getMeterWhValue(uint32_t baseValue, uint32_t meterImpCount){
+    /*
+        Converts base Wh and accumulated impulse count value to accumulated Wh,
+        rounded to the nearest Wh.
+     */
+
+    return (uint32_t) (baseValue + 0.5f + (meterImpCount * (1000.0f / cfgMeterImpPerKwh)));
+}
+
+
+void printWhValue(uint32_t whValue, LogLev logLevel){
+    if (cfgLogLevel >= logLevel){
+        writeLog(whValue, logNull);
+        writeLogF(F(" Wh"), logNull);
+    }
 }
 
 
 void printCmdHelp(){
     printPrompt();
-    writeLogF(F("Commands: "), logNull);
+    writeLogF(F("Cmds: "), logNull);
     for (uint8_t i = 0; i <= 17; i++){
         print_P((char*)pgm_read_word(&(SER_CMDS[i])));
         writeLogF(F(" "), logNull);
     }
-    printNewLine();
+    printNewLine(logNull);
 }
 
 bool strStartsWith(const char *strBody, const char *strPrefix){
@@ -860,8 +898,9 @@ void printCurrent(){
     printPrompt();
     writeLogF(F("IRMS: "), logNull);
     writeLog(irmsCurrent, logNull);
-    writeLogF(F(", PRMS: "), logNull);
-    writeLogLn(getRMSPower(irmsCurrent), logNull);
+    writeLogF(F(" A, PRMS: "), logNull);
+    writeLog(getRMSPower(irmsCurrent), logNull);
+    writeLogLnF(F(" W"), logNull);
 }
 
 
@@ -876,25 +915,30 @@ uint16_t freeRAM(){
 }
 
 
+void printMeterBufferElement(uint8_t element_ix){
+    printPrompt(); printPrompt();
+    writeLog(element_ix, logNull);
+    writeLogF(F("=["), logNull);
+    writeLog(MeterEntryBuffer[element_ix].entryStartTime, logNull);
+    writeLogF(F(","), logNull);
+    writeLog(MeterEntryBuffer[element_ix].meterImpCount, logNull);
+    writeLogF(F(","), logNull);
+    writeLog(MeterEntryBuffer[element_ix].rmsCurrent, logNull);
+    writeLogF(F(","), logNull);
+    writeLog(MeterEntryBuffer[element_ix].entryState, logNull);
+    writeLogLnF(F("]"), logNull);
+}
+
+
 void printMeterBuffer(){
     /*
         Dumps meter buffer to serial (terminal)
      */
     printPrompt();
     writeLogLnF(F("Meter: "), logNull);
-    for (int i = 0; i < METER_READ_BUFFER_LEN; i++){
-        printPrompt();
-        writeLogF(F(" ["), logNull);
-        writeLog(meterReadBuffer[i].readTime, logNull);
-        writeLogF(F(","), logNull);
-        writeLog(meterReadBuffer[i].meterValue, logNull);
-        writeLogF(F(","), logNull);
-        writeLog(meterReadBuffer[i].rmsCurrent, logNull);
-        writeLogF(F(","), logNull);
-        writeLog(meterReadBuffer[i].entryState, logNull);
-        writeLogLnF(F("]"), logNull);
+    for (uint8_t i = 0; i < METER_ENTRY_BUFFER_LEN; i++){
+        printMeterBufferElement(i);
     }
-    printNewLine();
 }
 
 
@@ -905,30 +949,80 @@ uint8_t getMtrBuffIxOffset(uint8_t buffIndex, int8_t offset){
      */
 
     if (offset < 0 && abs(offset) > buffIndex)
-        // abs(offset) may be > METER_READ_BUFFER_LEN:
-        return METER_READ_BUFFER_LEN - ((abs(offset) - buffIndex) %
-                METER_READ_BUFFER_LEN);
+        // abs(offset) may be > METER_ENTRY_BUFFER_LEN:
+        return METER_ENTRY_BUFFER_LEN - ((abs(offset) - buffIndex) %
+                METER_ENTRY_BUFFER_LEN);
     else if (offset < 0)
         return buffIndex - abs(offset);
     else
-        return (buffIndex + offset) % METER_READ_BUFFER_LEN;
+        return (buffIndex + offset) % METER_ENTRY_BUFFER_LEN;
 }
 
 
-uint32_t getNewMeterValue(uint32_t lastMeterValue, uint32_t readValue,
+uint32_t getNewmeterImpCount(uint32_t lastMeterImpCount, uint32_t readValue,
             bool newAccumValue){
     /*
-        Determines new value of accumulation meter given a new read
+        Determines new value of accumulation impulse count given a new read
      */
 
     // Cycle meter when at METER_MAX_VALUE, or handle reset.
     // Need to handle cycling at receiver
-    if (newAccumValue || (lastMeterValue + readValue >= METER_MAX_VALUE)){
-        forceRebase = true;
+
+    static bool meterOverflow;
+    meterOverflow = (getMeterWhValue(meterBaseValue, lastMeterImpCount + readValue)
+                    >= METER_MAX_VALUE);
+
+    if (newAccumValue || meterOverflow) {
+        if (meterOverflow)
+            meterBaseValue = 0;     //TODO: will lose unsent entries
+        sendRebase = true;
         return readValue;
     }
     else
-        return (lastMeterValue + readValue);
+        return (lastMeterImpCount + readValue);
+}
+
+
+void closeEntryCreateNew(bool readCurrent){
+    // Finalise 'closed', ready to send meter entry, create new one
+    if (readCurrent)
+        MeterEntryBuffer[mrbPushNext].rmsCurrent = getRMSCurrent();
+
+    // ensure entry is closed
+    MeterEntryBuffer[mrbPushNext].entryState = entryClosed;
+
+    writeLogF(F(": Closed "), logDebug);
+    if (cfgLogLevel >= logDebug)
+        printMeterBufferElement(mrbPushNext);
+
+    // advance write pointer, creating new entry
+    mrbPushNext = getMtrBuffIxOffset(mrbPushNext, 1);
+
+    if (newClosedMeterEntries < METER_ENTRY_BUFFER_LEN)
+        newClosedMeterEntries++;
+
+    // initialise values, will override later if needed
+    MeterEntryBuffer[mrbPushNext].entryStartTime =
+            MeterEntryBuffer[getMtrBuffIxOffset(mrbPushNext, -1)].entryStartTime
+            + cfgMeterInterval;
+
+    if (MeterEntryBuffer[mrbPushNext].entryStartTime > getNowTimestampSec()){
+        //writeLogLnF(F("Resetting entryStartTime to now"), logWarn);
+        MeterEntryBuffer[mrbPushNext].entryStartTime = getNowTimestampSec();
+    }
+
+    MeterEntryBuffer[mrbPushNext].meterImpCount =
+            MeterEntryBuffer[getMtrBuffIxOffset(mrbPushNext, -1)].meterImpCount;
+    MeterEntryBuffer[mrbPushNext].rmsCurrent = 0.0;
+    MeterEntryBuffer[mrbPushNext].entryState = entryOpen;
+
+    writeLogF(F(": Opened "), logDebug);
+    if (cfgLogLevel >= logDebug)
+        printMeterBufferElement(mrbPushNext);
+
+    // Nudge next read pointer forward on a write pointer collision
+    if (mrbPopNext == mrbPushNext)
+        mrbPopNext = getMtrBuffIxOffset(mrbPopNext, 1);
 }
 
 
@@ -936,80 +1030,105 @@ void checkStaleEntry(){
     /*
         Checks for an open meter read entry that needs closing (e.g. interval
         expired), handles finalising of new read entry if created from read or
-        rebase.
+        rebase.  Separated from pushToMeterBuffer as not only called on a read
+        event, also when checking if time to send message.
      */
 
-    // set previous entry to close if over-time/stale
+     // check if entries need to be aligned to mm:00
+     if (alignReads && getNowTimestampSec() >= alignReadingFrom){
+         writeLogLnF(F("Algn=mm:00"), logInfo);
+         closeEntryCreateNew(CT_ENABLED);
+         // overwrite current entry's timestamp - coarse but simple
+         MeterEntryBuffer[mrbPushNext].entryStartTime = alignReadingFrom;
+         alignReads = false;
+         alignReadingFrom = 0ul;
+     }
+
+    // if intervals are used, set previous entry to close if over-time/stale
     if (cfgMeterInterval > 0 &&
-        getNowTimestampSec() - meterReadBuffer[mrbPushNext].readTime
+        getNowTimestampSec() - MeterEntryBuffer[mrbPushNext].entryStartTime
             >= cfgMeterInterval
-        && meterReadBuffer[mrbPushNext].entryState == entryOpen)
-            meterReadBuffer[mrbPushNext].entryState = entryClosed;
+        && MeterEntryBuffer[mrbPushNext].entryState == entryOpen)
+            MeterEntryBuffer[mrbPushNext].entryState = entryClosed;
 
-    // process close (set in several places, not just above), create a new
-    // 'open' entry
-    if (meterReadBuffer[mrbPushNext].entryState == entryClosed){
-        // Finalise 'closed', ready to send meter entry
-        if (CT_ENABLED)
-            meterReadBuffer[mrbPushNext].rmsCurrent = getRMSCurrent();
+    // Process close (set in several places, not just above), and create a new
+    // 'open' entry(s) with 0 reads.  Multiple entries can be created if we need
+    // to 'fast-forward' through intervals that had 0 reads (ensuring that we
+    // always have a contiguous set of intervals).
 
-        newClosedMeterEntries++;
+    // This will not be affected by a rebase by pushToMeterBuffer with
+    // newAccumValue as that creates an immediately closed entry. I.e. no huge
+    // jumps.
+    if (MeterEntryBuffer[mrbPushNext].entryState == entryClosed){
+        // Have we passed through at least one full interval with no reads?
 
-        // advance write pointer
-        mrbPushNext = getMtrBuffIxOffset(mrbPushNext, 1);
-        // set current to 0
-        meterReadBuffer[mrbPushNext].rmsCurrent = 0.00;
+        static uint32_t intervalsToSkip = 0;
+        if ((getNowTimestampSec() - (cfgMeterInterval * 2)) >
+            MeterEntryBuffer[mrbPushNext].entryStartTime)
+                intervalsToSkip =
+                    ((getNowTimestampSec() -
+                    MeterEntryBuffer[mrbPushNext].entryStartTime)
+                    / cfgMeterInterval) - 1;  // ensured cfgMeterInterval > 0
+        else
+            intervalsToSkip = 0;
 
-        // Nudge next read pointer forward on a write pointer collision
-        if (mrbPopNext == mrbPushNext)
-            mrbPopNext = getMtrBuffIxOffset(mrbPopNext, 1);
+        // close currently open entry, and iterate through any subsequent that
+        // need to be skipped
+        closeEntryCreateNew(CT_ENABLED);
+
+        // writeLogF(F("Skip intervals="), logDebug);
+        // writeLogLn(intervalsToSkip, logDebug);
+
+        for (uint8_t i=0; i<intervalsToSkip; i++)
+            closeEntryCreateNew(false);
+            // no current reading for 0 value entries
     }
 }
 
 
-void pushToMeterBuffer(uint32_t readTimestampSec, uint32_t readValue,
-        bool newAccumValue){
+void pushToMeterBuffer(uint32_t entryStartTimestampSec, uint32_t readValue,
+        bool rebase){
     /*
         Writes next element in ring buffer, incrementing push/write pointer.
      */
 
-    // If a non-zero meter interval is set, check if last read inside meter
-    // interval resolution, and if so append to entry; otherwise 'close' it.
-    if (cfgMeterInterval > 0 && ! newAccumValue){
-        if (readTimestampSec - meterReadBuffer[mrbPushNext].readTime
-                < cfgMeterInterval){
-            // entry time stays as when interval began
-            meterReadBuffer[mrbPushNext].entryState = entryOpen;
-            meterReadBuffer[mrbPushNext].meterValue =
-                    getNewMeterValue(meterReadBuffer[mrbPushNext].meterValue,
-                        readValue, newAccumValue);
-            return;
-        }
-        else {
-            checkStaleEntry();  //close old entry and creates new
-            meterReadBuffer[mrbPushNext].entryState = entryOpen;
-            meterReadBuffer[mrbPushNext].readTime = readTimestampSec;
-            meterReadBuffer[mrbPushNext].meterValue =
-                    getNewMeterValue(meterReadBuffer[
-                        getMtrBuffIxOffset(mrbPushNext, -1)].meterValue,
-                        readValue, newAccumValue);
-        }
+    // If a non-zero meter interval is set and current entry hasn't expired,
+    // append to current entry; otherwise 'close' the old entry, create a new
+    // one, and append the new read to it.
+    if (cfgMeterInterval > 0 && !rebase){
+        checkStaleEntry();
+        MeterEntryBuffer[mrbPushNext].meterImpCount =
+                getNewmeterImpCount(MeterEntryBuffer[mrbPushNext].meterImpCount,
+                    readValue, false);
+        // writeLogF(F("New Reads="), logDebug);
+        // writeLog(readValue, logDebug);
+        // if (cfgLogLevel >= logDebug)
+        //     printMeterBufferElement(mrbPushNext);
     }
-    // if a zero meter interval is set, or is rebased, create a new record and
-    // move pointer forward
+    // if a zero meter interval is set, or is rebased, create a new empty record
+    // and move pointer forward
     else {
-        meterReadBuffer[mrbPushNext].entryState = entryClosed;
-        meterReadBuffer[mrbPushNext].readTime = readTimestampSec;
-        meterReadBuffer[mrbPushNext].meterValue =
-                    getNewMeterValue(meterReadBuffer[
-                        getMtrBuffIxOffset(mrbPushNext, -1)].meterValue,
-                        readValue, newAccumValue);
-        checkStaleEntry();      // closes entry and creates new
+        // close previous entry if non-zero, i.e. will not fire at boot
+        if (MeterEntryBuffer[mrbPushNext].meterImpCount > 0)
+            closeEntryCreateNew(CT_ENABLED);
+
+        // override time and value for new entry (or first at boot)
+        MeterEntryBuffer[mrbPushNext].entryStartTime = entryStartTimestampSec;
+        MeterEntryBuffer[mrbPushNext].meterImpCount =
+                getNewmeterImpCount(MeterEntryBuffer[mrbPushNext].meterImpCount,
+                    readValue, true);  // handles overflow
+
+        // close entry just created, create empty one
+        closeEntryCreateNew(CT_ENABLED);
+
+        // override new entry's timestamp to now if rebase
+        if (rebase)
+            MeterEntryBuffer[mrbPushNext].entryStartTime = getNowTimestampSec();
     }
 }
 
 
-bool popFromMeterBuffer(MeterRead& meterread, bool getLast){
+bool popFromMeterBuffer(MeterEntry& MeterEntry, bool getLast){
     /*
         If getLast is true, returns last 'closed' element in ring buffer,
         advancing pop/read pointer to 'skip' any unpopped reads.
@@ -1037,29 +1156,29 @@ bool popFromMeterBuffer(MeterRead& meterread, bool getLast){
         while (entrySearchState != entryClosed
                 && entrySearchState != entrySent){
             entryIx = getMtrBuffIxOffset(entryIx, -1);
-            entrySearchState = meterReadBuffer[entryIx].entryState;
+            entrySearchState = MeterEntryBuffer[entryIx].entryState;
         }
     }
     else {
         // get next entry to be 'popped'
         entryIx = mrbPopNext;
-        entrySearchState = meterReadBuffer[entryIx].entryState;
+        entrySearchState = MeterEntryBuffer[entryIx].entryState;
     }
 
-    meterread.readTime = meterReadBuffer[entryIx].readTime;
-    meterread.meterValue = meterReadBuffer[entryIx].meterValue;
-    meterread.entryState = meterReadBuffer[entryIx].entryState;
-    meterread.rmsCurrent = meterReadBuffer[entryIx].rmsCurrent;
+    MeterEntry.entryStartTime = MeterEntryBuffer[entryIx].entryStartTime;
+    MeterEntry.meterImpCount = MeterEntryBuffer[entryIx].meterImpCount;
+    MeterEntry.entryState = MeterEntryBuffer[entryIx].entryState;
+    MeterEntry.rmsCurrent = MeterEntryBuffer[entryIx].rmsCurrent;
 
     if (entrySearchState == entryClosed){
         // set to sent
-        meterReadBuffer[entryIx].entryState = entrySent;
+        MeterEntryBuffer[entryIx].entryState = entrySent;
         // advance 'pop next' pointer
         mrbPopNext = getMtrBuffIxOffset(entryIx, 1);
         // We have returned a new 'closed', ready to send meter read
         if (getLast)
             newClosedMeterEntries = 0;
-        else
+        else if (newClosedMeterEntries > 0)
             newClosedMeterEntries--;
         return true;
     }
@@ -1168,7 +1287,10 @@ void getRTCTime(tmElements_t *nowTimeT){
 void printNowTime(LogLev logLevel) {
     static tmElements_t nowTimeT;
     getRTCTime(&nowTimeT);
+    writeLogF(F("Time: "), logLevel);
     printTime(nowTimeT, logLevel);
+    writeLogF(F("/"), logLevel);
+    writeLog(getNowTimestampSec(), logLevel);
 }
 
 
@@ -1184,13 +1306,13 @@ void adjustTSVar(uint32_t * timestampVar, uint32_t timeSecs){
        Adjust global timestamps to avoid negative/wild results from duration
        calcs
     */
-    static uint64_t adjTime = 0ul;
+    static int64_t adjTime = 0ul;
     adjTime = timeSecs - (getNowTimestampSec() - (*timestampVar));
     *timestampVar = adjTime >= 0 ? (uint32_t)adjTime : 0ul;
 }
 
 
-void setNowTimestampSec(uint32_t timeSecs){
+void setNowTimestampSec(uint32_t timeSecs, bool updateMeter, bool align){
     /*
        Sets UTC time in seconds since UNIX Epoch @ midnight Jan 1 1970
     */
@@ -1198,6 +1320,7 @@ void setNowTimestampSec(uint32_t timeSecs){
      // Adjust global timestamps
      adjustTSVar(&whenBooted, timeSecs);
      adjustTSVar(&whenLastGInstMsg, timeSecs);
+     adjustTSVar(&whenTmpGinrStart, timeSecs);
      adjustTSVar(&whenLastMeterMsg, timeSecs);
      adjustTSVar(&whenLastPingMsg, timeSecs);
      adjustTSVar(&whenLastTXPowCheck, timeSecs);
@@ -1207,13 +1330,19 @@ void setNowTimestampSec(uint32_t timeSecs){
      breakTime(timeSecs, newTime);
      rtc.time_set(&newTime);
 
-     // push out 0 value read to update time, force rebase
-     writeLogF(F("Time: "), logDebug);
-     printNowTime(logDebug);
-     printNewLine();
-     pushToMeterBuffer(getNowTimestampSec(),
-        meterReadBuffer[getMtrBuffIxOffset(mrbPushNext, -1)].meterValue, true);
-     forceRebase = true;
+     if (align){
+         // wait until top of minute
+         alignReadingFrom = getNowTimestampSec() +
+                (60 - (getNowTimestampSec() % 60));
+         alignReads = true;
+     }
+     if (updateMeter){
+         // push out 0 value read to update time, force rebase
+         // overwrite time for current entry
+         pushToMeterBuffer(getNowTimestampSec(),
+            MeterEntryBuffer[mrbPushNext].meterImpCount, true);
+         sendRebase = true;
+    }
 }
 
 
@@ -1245,7 +1374,7 @@ void putConfigToMem(){
     */
 
     uint8_t eeAddress = 0;
-    writeLogLnF(F("Updating EEPROM"), logInfo);
+    writeLogLnF(F("Updt ROM"), logInfo);
     wdt_reset();
     EEPROM.put(eeAddress, (uint8_t)cfgLogLevel);
     eeAddress += sizeof((uint8_t)cfgLogLevel);
@@ -1255,10 +1384,8 @@ void putConfigToMem(){
     eeAddress += sizeof(cfgPuckLEDTime);
     EEPROM.put(eeAddress, cfgMeterInterval);
     eeAddress += sizeof(cfgMeterInterval);
-    for (int i = 0; i < KEY_LENGTH; i++){
-        EEPROM.put(eeAddress, cfgMeterUnit[i]);
-        eeAddress++;
-    }
+    EEPROM.put(eeAddress, cfgMeterImpPerKwh);
+    eeAddress += sizeof(cfgMeterImpPerKwh);
     EEPROM.put(eeAddress, cfgTXPower);
     eeAddress += sizeof(cfgTXPower);
     wdt_reset();
@@ -1302,7 +1429,7 @@ void updatePuckLEDRate(uint8_t newRate, bool persist){
         attachInterrupt(digitalPinToInterrupt(PR_INTERRUPT_PIN),
                 watchedLEDOn, FALLING);
 
-    writeLogF(F("LED: 1 per meter's "), logNull);
+    writeLogF(F("LED 1 per "), logNull);
     writeLogLn(cfgPuckLEDRate, logNull);
 
     if (persist)
@@ -1323,7 +1450,7 @@ void getConfigFromMem(){
     uint8_t byteValArray[KEY_LENGTH] = {0};
     bool EEPROMValid = true;
 
-    writeLogLnF(F("Reading EEPROM"), logInfo);
+    writeLogLnF(F("Reading ROM"), logInfo);
     wdt_reset();
     EEPROM.get(eeAddress, byteVal);
     if (byteVal >= logNull && byteVal <= logDebug)
@@ -1354,19 +1481,13 @@ void getConfigFromMem(){
         EEPROMValid = false;
     eeAddress++;
 
-    memset(byteValArray, '\0', sizeof(byteValArray));
-    for (int i = 0; i < KEY_LENGTH; i++){
-        EEPROM.get(eeAddress, byteValArray[i]);
-        if (byteValArray[i] != '\0' && (byteValArray[i] < 32 ||
-                byteValArray[i] > 126))
-            EEPROMValid = false;
-        eeAddress++;
-    }
-
-    if (EEPROMValid){
-        memset(cfgMeterUnit, '\0', sizeof(cfgMeterUnit));
-        strncpy(cfgMeterUnit, (char*)byteValArray, sizeof(byteValArray));
-    }
+    EEPROM.get(eeAddress, doubleVal);
+    if (doubleVal >= 1 && doubleVal <= 65000)
+        cfgMeterImpPerKwh = doubleVal;
+    else
+        EEPROMValid = false;
+    eeAddress++;
+    eeAddress++;
 
     EEPROM.get(eeAddress, intVal);
     if (isTXPowValid(intVal))
@@ -1427,7 +1548,7 @@ void getConfigFromMem(){
     eeAddress++;
 
     memset(byteValArray, '\0', sizeof(byteValArray));
-    for (int i = 0; i < KEY_LENGTH; i++){
+    for (uint8_t i = 0; i < KEY_LENGTH; i++){
         EEPROM.get(eeAddress, byteValArray[i]);
         if (byteValArray[i] < 32 || byteValArray[i] > 126)
             EEPROMValid = false;
@@ -1440,7 +1561,7 @@ void getConfigFromMem(){
     }
 
     if (! EEPROMValid){
-        writeLogLnF(F("EEPROM Invalid"), logError);
+        writeLogLnF(F("ROM Invalid"), logError);
         resetConfig();
         putConfigToMem();
     }
@@ -1451,22 +1572,28 @@ void applyRadioConfig(){
     /*
        Applies current radio config parameters.  May be invoked from changes to
        config through serial commands.
+
+       NOTE: hack to restore RTC value - appears to be reset when changing
+       radio params, reinitialising, even though RTC has SPI SS High
     */
 
     writeLogLnF(F("Radio Init"), logDebug);
 
+    // hack - get time
+    tmpTime = getNowTimestampSec();
+
     if (!msgManager.init())         // also intialises radio driver
-      writeLogLnF(F("MsgMgr failed"), logError);
+      writeLogLnF(F("MsgMgr fail"), logError);
 
     msgManager.setThisAddress(cfgNodeId);
     msgManager.setTimeout(TX_TIMEOUT);
 
     if (!radio.setModemConfig(MODEM_CONFIG)) {
-        writeLogLnF(F("ModemCfg failed"), logError);
+        writeLogLnF(F("ModemCfg fail"), logError);
     }
 
     if (!radio.setFrequency(RADIO_FREQ)) {
-        writeLogLnF(F("SetFreq failed"), logError);
+        writeLogLnF(F("SetFreq fail"), logError);
     }
 
     radio.setTxPower(cfgTXPower, RADIO_HIGH_POWER);
@@ -1478,6 +1605,9 @@ void applyRadioConfig(){
     radio.setEncryptionKey(cfgEncryptKey);
 
     radio.sleep();
+
+    // hack - restore time
+    setNowTimestampSec(tmpTime, false, false);
 }
 
 
@@ -1486,10 +1616,10 @@ void resetConfig(){
        Sets config parameters to defaults
     */
     cfgLogLevel = DEF_LOG_LEVEL;
-    updatePuckLEDRate(DEF_METER_PULSES_PER_LED_PULSE,false);
-    cfgPuckLEDTime = DEF_LED_PULSE_TIME_MS;
+    updatePuckLEDRate(DEF_METER_IMP_PER_LED_PULSE,false);
+    cfgPuckLEDTime = DEF_LED_IMP_TIME_MS;
     cfgMeterInterval = DEF_METER_INT_RES_SEC;
-    strncpy(cfgMeterUnit, DEF_METER_UNIT, KEY_LENGTH - 1);
+    cfgMeterImpPerKwh = DEF_METER_IMP_PER_KWH;
     cfgTXPower = DEF_TX_POWER;
     cfgTgtRSSI = DEF_TGT_RSSI;
     cfgNodeId = DEF_NODE_ID;
@@ -1508,7 +1638,7 @@ bool changeTXPower(int8_t newValue, bool toMem){
     if (! isTXPowValid(newValue))
         return false;
 
-    writeLogF(F("TX Power: "), logInfo);
+    writeLogF(F("TXPow: "), logInfo);
     writeLog(newValue, logInfo);
     writeLogF(F(", Avg RSSI: "), logInfo);
     writeLogLn(averageRSSIAtGateway, logInfo);
@@ -1520,7 +1650,7 @@ bool changeTXPower(int8_t newValue, bool toMem){
     radio.setTxPower(cfgTXPower, RADIO_HIGH_POWER);
 
     sprintf_P(msgBuffStr, RMSG_GMSG);
-    sprintf(msgBuffStr, "%s,%s %d", msgBuffStr, "Set TXPow to ", cfgTXPower);
+    sprintf(msgBuffStr, "%s,%s %d", msgBuffStr, "Set TXPow to", cfgTXPower);
     sendRadioMsg(cfgGatewayId, false);
 
     radio.sleep();
@@ -1562,7 +1692,7 @@ void checkTXtoRSSI(){
 
 void toggleSleepMode(){
     canSleep = !canSleep;
-    writeLogF(F("Sleep: "), logNull);
+    writeLogF(F("Slp: "), logNull);
     writeLogLnF(canSleep ? F("ON") : F("OFF"), logNull);
 }
 
@@ -1605,7 +1735,7 @@ int readLineSerial(int readChar, char *serialBuffer){
                 Serial.write("\b\x20\b");
                 break;
             case '\r': // Return on CR
-                printNewLine();
+                printNewLine(logNull);
                 retPos = serialBuffPos;
                 serialBuffPos = 0;  // reset index
                 return retPos;
@@ -1646,39 +1776,37 @@ void checkSerialInput() {
 
         // Dump - will trigger all other 'query' commands
         if (strStartsWithP(serInBuff, SER_CMD_DUMP) == 1){
-            tmpRead = meterReadBuffer[getMtrBuffIxOffset(mrbPushNext, -1)];
+            tmpRead = MeterEntryBuffer[mrbPushNext];
             printPrompt();
-            writeLogF(F("Last Meter... Time: "), logNull);
-            writeLog(tmpRead.readTime, logNull);
+            writeLogF(F("Mtr Base Val: "), logNull);
+            printWhValue(getMeterWhValue(meterBaseValue, 0), logNull);
 
-            writeLogF(F(", Value: "), logNull);
-            writeLog(tmpRead.meterValue, logNull);
-            writeLogF(F(" "), logNull);
-            printUnits();
+            writeLogF(F(", Val: "), logNull);
+            printWhValue(getMeterWhValue(meterBaseValue, tmpRead.meterImpCount),
+            logNull);
+            printNewLine(logNull);
 
-            writeLogF(F(", Current: "), logNull);
-            writeLog(tmpRead.rmsCurrent, logNull);
-            writeLogF(F(" A"), logNull);
-            printNewLine();
+            if (CT_ENABLED)
+                printCurrent();
 
             printPrompt();
-            writeLogF(F("New Raw Reads: "), logNull);
+            writeLogF(F("Raw: "), logNull);
             writeLogLn(newRawMeterReads, logNull);
 
             printPrompt();
-            writeLogF(F("New Closed Entries: "), logNull);
+            writeLogF(F("Closed Ent: "), logNull);
             writeLogLn(newClosedMeterEntries, logNull);
 
             printPrompt();
-            writeLogF(F("Last MUPD: "), logNull);
+            writeLogF(F("Last MUP: "), logNull);
             writeLogLn(whenLastMeterMsg, logNull);
 
             printPrompt();
-            writeLogF(F("Meter Next Push Ix: "), logNull);
+            writeLogF(F("Push Ix: "), logNull);
             writeLogLn(mrbPushNext, logNull);
 
             printPrompt();
-            writeLogF(F("Meter Next Pop Ix: "), logNull);
+            writeLogF(F("Pop Ix: "), logNull);
             writeLogLn(mrbPopNext, logNull);
 
             printMeterBuffer();
@@ -1692,7 +1820,7 @@ void checkSerialInput() {
             writeLogLn(freeRAM(), logNull);
 
             printPrompt();
-            writeLogF(F("Can Sleep: "), logNull);
+            writeLogF(F("Can Slp: "), logNull);
             writeLogLnF(canSleep ? F("Y"): F("N"), logNull);
 
             printPrompt();
@@ -1714,21 +1842,20 @@ void checkSerialInput() {
                     (strlen(serInBuff) - strlen_P(SER_CMD_TIME) -1));
             tmpInt = strtoul(cmdVal,NULL,0);
             if (tmpInt > 0){
-                setNowTimestampSec(tmpInt);
+                setNowTimestampSec(tmpInt, true, false);
                 cmdStatus = valid;
             }
             else{
                 printPrompt();
-                writeLogF(F("Invalid Time"), logNull);
+                writeLogF(F("Bad Time"), logNull);
             }
         }
 
         // print time, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_TIME) >= 1){
             printPrompt();
-            writeLogF(F("Time: "), logNull);
             printNowTime(logNull);
-            printNewLine();
+            printNewLine(logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
         }
@@ -1747,7 +1874,7 @@ void checkSerialInput() {
                 cfgLogLevel = logDebug;
             else{
                 printPrompt();
-                writeLogLnF(F("Invalid Log Level"), logNull);
+                writeLogLnF(F("Bad LogLev"), logNull);
                 return;
             }
             putConfigToMem();  // apply config and write to EEPROM
@@ -1757,9 +1884,9 @@ void checkSerialInput() {
         // print log level, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_LOGL) >= 1){
             printPrompt();
-            writeLogF(F("Log Level: "), logNull);
+            writeLogF(F("LogLev: "), logNull);
             printLogLevel(cfgLogLevel, false);
-            printNewLine();
+            printNewLine(logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
         }
@@ -1770,7 +1897,7 @@ void checkSerialInput() {
                     (strlen(serInBuff) - strlen_P(SER_CMDS[6]) -1));
             if (strlen(tmpStr) != KEY_LENGTH){
                 printPrompt();
-                writeLogLnF(F("Invalid Key"), logNull);
+                writeLogLnF(F("Bad Key"), logNull);
             }
             else{
                 memcpy(cfgEncryptKey, tmpStr, strlen(tmpStr));
@@ -1785,7 +1912,7 @@ void checkSerialInput() {
             printPrompt();
             writeLogF(F("Key: "), logNull);
             Serial.write(cfgEncryptKey, sizeof(cfgEncryptKey));
-            printNewLine();
+            printNewLine(logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
         }
@@ -1801,7 +1928,7 @@ void checkSerialInput() {
             if(sscanf(tmpStr, "%hhu.%hhu.%hhu.%hhu",
                     &addr1, &addr2, &addr3, &addr4) != 4){
                 printPrompt();
-                writeLogLnF(F("Invalid Address"), logNull);
+                writeLogLnF(F("Bad Addr"), logNull);
             }
             else{
                 cfgNetworkId1 = addr1;
@@ -1829,7 +1956,7 @@ void checkSerialInput() {
             tmpInt = strtoul(cmdVal,NULL,0);
             if (tmpInt < 1 || tmpInt > 253){
                 printPrompt();
-                writeLogLnF(F("Invalid Gateway Id"), logNull);
+                writeLogLnF(F("Bad Gway Id"), logNull);
             }
             else{
                 cfgGatewayId = tmpInt;
@@ -1842,7 +1969,7 @@ void checkSerialInput() {
         // print gateway id, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_GWID) >= 1){
             printPrompt();
-            writeLogF(F("Gateway Id: "), logNull);
+            writeLogF(F("Gway Id: "), logNull);
             writeLogLn(cfgGatewayId, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
@@ -1855,7 +1982,7 @@ void checkSerialInput() {
             tmpInt = strtoul(cmdVal,NULL,0);
             if (tmpInt < 1 || tmpInt > 253){
                 printPrompt();
-                writeLogLnF(F("Invalid Node Id"), logNull);
+                writeLogLnF(F("Bad Node Id"), logNull);
             }
             else{
                 cfgNodeId = tmpInt;
@@ -1882,7 +2009,7 @@ void checkSerialInput() {
             tgtRSSI = strtol(cmdVal,NULL,0);
             if (tgtRSSI < -100 || tgtRSSI > 0){
                 printPrompt();
-                writeLogLnF(F("Invalid RSSI"), logNull);
+                writeLogLnF(F("Bad RSSI"), logNull);
             }
             else{
                 cfgTgtRSSI = tgtRSSI;
@@ -1895,12 +2022,12 @@ void checkSerialInput() {
         if (strStartsWithP(serInBuff, SER_CMD_TXPW) == 2){
             strncpy(cmdVal, serInBuff + strlen_P(SER_CMD_TXPW) + 1,
                     (strlen(serInBuff) - strlen_P(SER_CMD_TXPW) -1));
-            static int32_t txPow = 0;
+            static int16_t txPow = 0;
             txPow = strtol(cmdVal,NULL,0);
 
             if (! isTXPowValid(txPow)){
                 printPrompt();
-                writeLogLnF(F("Invalid TX Power"), logNull);
+                writeLogLnF(F("Bad TX Pow"), logNull);
             }
             else{
                 changeTXPower(txPow, true);
@@ -1912,64 +2039,62 @@ void checkSerialInput() {
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_TRSS) >= 1 ||
                 strStartsWithP(serInBuff, SER_CMD_TXPW) >= 1){
             printPrompt();
-            writeLogF(F("TX Power: "), logNull);
+            writeLogF(F("TX Pow: "), logNull);
             writeLogLn(cfgTXPower, logNull);
             printPrompt();
             writeLogF(F("Target RSSI: "), logNull);
             writeLogLn(cfgTgtRSSI, logNull);
             printPrompt();
-            writeLogF(F("Last SSI from Gateway: "), logNull);
+            writeLogF(F("Last Gway SSI: "), logNull);
             writeLogLn(lastRSSIAtNode, logNull);
             printPrompt();
-            writeLogF(F("Avg RSSI at Gateway: "), logNull);
+            writeLogF(F("Avg RSSI @ Gway: "), logNull);
             writeLogLn(averageRSSIAtGateway, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
         }
 
-        // set meter value
+        // set meter value, setting meter base value and resetting meter buffer to 0
         if (strStartsWithP(serInBuff, SER_CMD_MTRV) == 2){
             strncpy(cmdVal, serInBuff + strlen_P(SER_CMD_MTRV) + 1,
                     (strlen(serInBuff) - strlen_P(SER_CMD_MTRV) -1));
             tmpInt = strtoul(cmdVal,NULL,0);
-            if (tmpInt > 0 && tmpInt < METER_MAX_VALUE){
-                pushToMeterBuffer(getNowTimestampSec(), tmpInt, true);
+            if (tmpInt >= 0 && tmpInt < METER_MAX_BASE_VALUE){
+                meterBaseValue = tmpInt;
+                pushToMeterBuffer(getNowTimestampSec(), 0, true);
                 printPrompt();
-                writeLogF(F("Set Meter: "), logNull);
-                writeLog(meterReadBuffer[
-                    getMtrBuffIxOffset(mrbPushNext, -1)].meterValue, logNull);
-                printUnits();
-                printNewLine();
-                forceRebase = true;
+                writeLogF(F("Set Mtr Val: "), logNull);
+                printWhValue(getMeterWhValue(meterBaseValue,
+                    MeterEntryBuffer[mrbPushNext].meterImpCount), logNull);
+                printNewLine(logNull);
+                sendRebase = true;
                 cmdStatus = valid;
             }
         }
 
-        // set meter unit
-        if (strStartsWithP(serInBuff, SER_CMD_MTRU) == 2){
-            strncpy(cmdVal, serInBuff + strlen_P(SER_CMD_MTRU) + 1,
-                    (strlen(serInBuff) - strlen_P(SER_CMD_MTRU) -1));
-            if (strlen(cmdVal) > KEY_LENGTH){
-                printPrompt();
-                writeLogF(F("Invalid unit: "), logNull);
-                writeLog(cmdVal, logNull);
-                writeLogF(F(". Must be < "), logNull);
-                writeLog(KEY_LENGTH, logNull);
-                writeLogLnF(F(" char"), logNull);
-            }
-            else{
-                strncpy(cfgMeterUnit, cmdVal, KEY_LENGTH - 1);
+        // set meter impulse rate per kWh
+        if (strStartsWithP(serInBuff, SER_CMD_MTRR) == 2){
+            strncpy(cmdVal, serInBuff + strlen_P(SER_CMD_MTRR) + 1,
+                    (strlen(serInBuff) - strlen_P(SER_CMD_MTRR) -1));
+            tmpInt = strtoul(cmdVal,NULL,0);
+            if (tmpInt > 0 && tmpInt <= 65000){
+                cfgMeterImpPerKwh = (uint16_t)tmpInt;
                 putConfigToMem();  // apply config and write to EEPROM
+                pushToMeterBuffer(getNowTimestampSec(), 0, true);
+                sendRebase = true;
                 cmdStatus = valid;
+            }
+            else {
+                printPrompt();
+                writeLogLnF(F("Bad Imp/kWh"), logNull);
             }
         }
 
-        // print meter unit, also echoes after being set
-        if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_MTRU) >= 1){
+        // print meter impulse rate per kWh, also echoes after being set
+        if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_MTRR) >= 1){
             printPrompt();
-            writeLogF(F("Meter Unit: "), logNull);
-            printUnits();
-            printNewLine();
+            writeLogF(F("Imp/kWh: "), logNull);
+            writeLogLn(cfgMeterImpPerKwh, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
         }
@@ -1989,14 +2114,14 @@ void checkSerialInput() {
         // print meter interval, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_MTRI) >= 1){
             printPrompt();
-            writeLogF(F("Meter Interval (s): "), logNull);
+            writeLogF(F("Mtr Interval (s): "), logNull);
             writeLogLn(cfgMeterInterval, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
         }
 
         // toggle testmode
-        if (strStartsWithP(serInBuff, SER_CMD_TEST) == 2){
+        if (strStartsWithP(serInBuff, SER_CMD_TEST) == 1){
                 testMode = ! testMode;
                 if (testMode)
                     canSleep = false;
@@ -2017,7 +2142,7 @@ void checkSerialInput() {
             }
             else{
                 printPrompt();
-                writeLogLnF(F("Invalid LED rate"), logNull);
+                writeLogLnF(F("Bad LED rate"), logNull);
             }
         }
 
@@ -2042,7 +2167,7 @@ void checkSerialInput() {
             }
             else{
                 printPrompt();
-                writeLogLnF(F("Invalid LED time"), logNull);
+                writeLogLnF(F("Bad LED time"), logNull);
             }
         }
 
@@ -2057,7 +2182,7 @@ void checkSerialInput() {
 
         if (cmdStatus == invalid){
             printPrompt();
-            writeLogLnF(F("Invalid Command"), logNull);
+            writeLogLnF(F("Bad Cmd"), logNull);
             printCmdHelp();
         }
     }
@@ -2078,25 +2203,51 @@ void processMsgRecv(){
      strcpy(msgBuffStr, "");
      sprintf(msgBuffStr, "%s", (char*)radioMsgBuff);
 
+    //  GITR:
+    //  instruction (from gateway) to temporarily increase GINR polling rate
+    //  format: GITR,<new_rate>,<duration>,<last_node_rssi>
+    //  e.g.: GITR,30,600,-70
+     if (strStartsWithP(msgBuffStr, RMSG_GITR) == 1){
+         static uint32_t tmpPollRate;
+         static uint32_t tmpPollPeriod;
+         tmpPollRate = 0ul;
+         tmpPollPeriod = 0ul;
+
+         sscanf (msgBuffStr, "%*[^,],%lu,%lu,%hhd", &tmpPollRate,
+                 &tmpPollPeriod, &lastRSSIAtGateway);
+
+         if (tmpPollRate >= 10 && tmpPollRate <= 600
+                && tmpPollPeriod >= 10 && tmpPollPeriod <= 3000){
+             ginrMsgIntervalSec = (uint16_t) tmpPollRate;
+             tmpGinrPollPeriod = (uint16_t) tmpPollPeriod;
+             whenTmpGinrStart = getNowTimestampSec();
+             writeLogF(F("Got GITR: "), logInfo);
+             writeLog(tmpPollRate, logInfo);
+             writeLogF(F("s for "), logInfo);
+             writeLog(tmpPollPeriod, logInfo);
+             writeLogLnF(F("s"), logInfo);
+         }
+         else
+             writeLogLnF(F("Got invalid GITR"), logError);
+    }
+
     //  MVAI:
     //  meter instruction (from gateway) to set accumulation meter value
-    //  format: MVAI;<new_meter_value>,<last_node_rssi>
-    //  e.g.: MVAI;120000,-70
-     if (strStartsWithP(msgBuffStr, RMSG_MVAI) == 1){
+    //  format: MVAI,<new_meter_value>,<last_node_rssi>
+    //  e.g.: MVAI,120000,-70
+     else if (strStartsWithP(msgBuffStr, RMSG_MVAI) == 1){
         // get new meter value from message
-        static uint32_t newRead = 0ul;
-        sscanf (msgBuffStr, "%*[^,],%lu,%hhd", &newRead, &lastRSSIAtGateway);
+        static uint32_t newMeterValue = 0ul;
+        sscanf (msgBuffStr, "%*[^,],%lu,%hhd", &newMeterValue, &lastRSSIAtGateway);
 
-        if (newRead > 0 && newRead < UINT32_MAX){
-            pushToMeterBuffer(getNowTimestampSec(), newRead, true);
-            writeLogF(F("Got MVAI. Changed ("), logInfo);
-            if (cfgLogLevel >= logInfo)
-                printUnits();
-            writeLogF(F("): "), logInfo);
-            writeLog(meterReadBuffer[
-                    getMtrBuffIxOffset(mrbPushNext, -2)].meterValue, logInfo);
-            writeLogF(F(" to: "), logInfo);
-            writeLogLn(newRead, logInfo);
+        if (newMeterValue > 0 && newMeterValue < METER_MAX_BASE_VALUE){
+            meterBaseValue = newMeterValue;
+            pushToMeterBuffer(getNowTimestampSec(), 0, true);
+            writeLogF(F("Got MVAI: "), logInfo);
+            printWhValue(getMeterWhValue(meterBaseValue,
+                MeterEntryBuffer[mrbPushNext].meterImpCount), logInfo);
+            printNewLine(logInfo);
+            sendRebase = true;
         }
         else
             writeLogLnF(F("Got invalid MVAI"), logError);
@@ -2105,7 +2256,7 @@ void processMsgRecv(){
     // MINI:
     // meter instruction (from gateway) to set accumulation meter interval
     // format: MINI,<new_interval>,<last_node_rssi>
-    // e.g.: MINI;5,-70
+    // e.g.: MINI,5,-70
     else if (strStartsWithP(msgBuffStr, RMSG_MINI) == 1){
             // get new meter interval from message
             static uint32_t newInterval = 0ul;
@@ -2113,7 +2264,7 @@ void processMsgRecv(){
                     &lastRSSIAtGateway);
 
             if (newInterval >= 0 && newInterval <= UINT8_MAX){
-                writeLogF(F("Got MINI. Changed "), logInfo);
+                writeLogF(F("Got MINI: "), logInfo);
                 writeLog(cfgMeterInterval, logInfo);
                 writeLogF(F(" secs to "), logInfo);
                 writeLogLn(newInterval, logInfo);
@@ -2127,7 +2278,7 @@ void processMsgRecv(){
     // MPLI:
     // meter instruction (from gateway) to set LED pulse rate and duration
     // format: MPLI,<led_pulse_rate>,<led_pulse_duration>,<last_node_rssi>
-    // e.g.: MPLI;1,500,-70
+    // e.g.: MPLI,1,500,-70
     else if (strStartsWithP(msgBuffStr, RMSG_MPLI) == 1){
         // get new LED puck settings from message
         static uint32_t ledPulseRate;
@@ -2140,7 +2291,7 @@ void processMsgRecv(){
 
         if (ledPulseRate <= UINT8_MAX && ledPulseTime <= 3000){
             cfgPuckLEDTime = (uint16_t) ledPulseTime;
-            writeLogLnF(F("Got MPLI"), logInfo);
+            writeLogLnF(F("Got MPLI: "), logInfo);
             updatePuckLEDRate((uint8_t) ledPulseRate, false);
             writeLog(cfgPuckLEDRate, logInfo);
             writeLogF(F(" LED Pulse (ms): "), logInfo);
@@ -2153,27 +2304,34 @@ void processMsgRecv(){
 
     // PRSP:
     // ping response from gateway, used to sync clock
-    // format: PRSP,<request_time_node>,<current_time_gateway>,<last_node_rssi>
-    // e.g.:   PRSP;14968429155328,1496842915428,-70
+    // format: PRSP,<request_time_node>,<current_time_gateway>,<align>,
+    // <last_node_rssi>
+    // e.g.:   PRSP,14968429155328,1496842915428,1,-70
     else if (strStartsWithP(msgBuffStr, RMSG_PRSP) == 1){
         // get new clock value from message
         static uint32_t reqTime;
         static uint32_t respTime;
+        static uint8_t align;
         reqTime = 0ul;
         respTime = 0ul;
-        sscanf (msgBuffStr, "%*[^,],%lu,%lu,%hhd", &reqTime, &respTime,
-                    &lastRSSIAtGateway);
+        sscanf (msgBuffStr, "%*[^,],%lu,%lu,%hhu,%hhd", &reqTime, &respTime,
+                    &align, &lastRSSIAtGateway);
+        // use time provided if message is not stale (within drift) and
+        // time provided is outside drift tolerance (SYNC_TIME_MAX_DRIFT_SEC
+        // does double duty)
         if ((getNowTimestampSec() - reqTime <= SYNC_TIME_MAX_DRIFT_SEC) &&
                 (respTime > 0) &&
                 (abs(getNowTimestampSec() - respTime) > SYNC_TIME_MAX_DRIFT_SEC)
             ){
             //compensate for latency from gateway
             respTime += ((getNowTimestampSec() - reqTime) / 2);
-            writeLogF(F("Got PRSP. Changed from "), logDebug);
+            writeLogF(F("Got PRSP: "), logDebug);
             writeLog(getNowTimestampSec(), logDebug);
             writeLogF(F(" to "), logDebug);
             writeLogLn(respTime, logDebug);
-            setNowTimestampSec(respTime);
+            if (align != 1)
+                align = 0;      // in case garbage passed
+            setNowTimestampSec(respTime, true, (align == 1));
         }
         else
             writeLogLnF(F("Got PRSP. No update"), logInfo);
@@ -2182,7 +2340,7 @@ void processMsgRecv(){
     // MNOI:
     // 'no op' ACK to GINR, provides RSSI for auto-tuning
     // format: MNOI,<last_node_rssi>
-    // e.g.: MNOI;-70
+    // e.g.: MNOI,-70
     else if (strStartsWithP(msgBuffStr, RMSG_MNOI) == 1){
         sscanf (msgBuffStr, "%*[^,],%hhd", &lastRSSIAtGateway);
     }
@@ -2193,7 +2351,7 @@ void processMsgRecv(){
     }
 
     else {
-        writeLogF(F("Unexpected msg: "), logWarn);
+        writeLogF(F("Unk msg: "), logWarn);
         writeLogLn(msgBuffStr, logWarn);
     }
 
@@ -2229,7 +2387,7 @@ void sendRadioMsg(uint8_t recipient, bool checkReply){
     */
 
     if (strlen(msgBuffStr) > RH_RF69_MAX_MESSAGE_LEN){
-       writeLogF(F("Msg send failed. Too long: "), logError);
+       writeLogF(F("Msg too long: "), logError);
        writeLogLn(msgBuffStr, logError);
        return;
     }
@@ -2237,8 +2395,8 @@ void sendRadioMsg(uint8_t recipient, bool checkReply){
     uint8_t lenBuff = sizeof(radioMsgBuff);
     memset(radioMsgBuff, 0, sizeof(radioMsgBuff));
 
-    writeLogF(F("Sending: "), logDebug);
-    writeLogLn(msgBuffStr, logDebug);
+    writeLogF(F("Sending: "), logInfo);
+    writeLogLn(msgBuffStr, logInfo);
     memcpy(radioMsgBuff, msgBuffStr, strlen(msgBuffStr));
     wdt_reset();
 
@@ -2246,7 +2404,6 @@ void sendRadioMsg(uint8_t recipient, bool checkReply){
     if (msgManager.sendtoWait(radioMsgBuff, lenBuff, recipient)){
         txConsFailCount = 0;
         // Wait for a reply from the Gateway if instructed to
-        // TODO: seems unreliable for GINR
         if (checkReply &&
             msgManager.recvfromAckTimeout(radioMsgBuff, &lenBuff, RX_TIMEOUT,
                     &lastMsgFrom))
@@ -2255,7 +2412,7 @@ void sendRadioMsg(uint8_t recipient, bool checkReply){
             writeLogLnF(F("No ACK recv"), logInfo);
     }
     else {
-        writeLogF(F("Failed to send msg: "), logWarn);
+        writeLogF(F("Failed to send: "), logWarn);
         writeLogLn(msgBuffStr, logWarn);
         // reset TX power to max in case too weak - auto-tuning will
         // detune as needed
@@ -2276,7 +2433,7 @@ void sleepNode(){
             getNowTimestampSec() - whenBooted < 15)
         return;
 
-    writeLogLnF(F("Sleeping til interrupt"), logDebug);
+    //writeLogLnF(F("Sleeping til interrupt"), logDebug);
     static uint32_t whenSleepStarted;
     whenSleepStarted = getNowTimestampSec();
     radio.sleep();      // should be asleep already
@@ -2336,7 +2493,7 @@ void checkBatt(){
     //      * correction_multiplier
     vinVoltageMV = (getAvgAnalogVal(VIN_DIV_PIN) / VIN_DIV_VOLT_DIVISOR) *
                         VIN_DIV_RSCALE_MULT * VIN_DIV_CORRECT_MULT;
-    writeLogF(F("Battery Voltage (mV): "), logDebug);
+    writeLogF(F("Battery V (mV): "), logDebug);
     writeLogLn(vinVoltageMV, logDebug);
 }
 
@@ -2348,19 +2505,22 @@ void checkMeterRebase(){
     // MREB:  meter rebase (to gateway) - a time and value baseline
     // format: MREB,<meter_time_start>,<meter_value_start>;
     // e.g.:   MREB,1496842913428,18829393;
-    if (forceRebase || (newClosedMeterEntries > 0 && (whenLastMeterMsg == 0))){
+    if (sendRebase || (newClosedMeterEntries > 0 && (whenLastMeterMsg == 0))){
         bool gotRead = popFromMeterBuffer(tmpRead, true);
+
         if (gotRead){
             sprintf_P(msgBuffStr, RMSG_MREBASE);
-            sprintf(msgBuffStr, "%s,%lu,%lu", msgBuffStr, tmpRead.readTime,
-                    tmpRead.meterValue);
+            sprintf(msgBuffStr, "%s,%lu,%lu", msgBuffStr,
+                    tmpRead.entryStartTime,
+                    getMeterWhValue(meterBaseValue, tmpRead.meterImpCount));
+
             sendRadioMsg(cfgGatewayId, false);
             whenLastMeterMsg = getNowTimestampSec();
         }
         else
-            writeLogLnF(F("Rebase failed - couldn't find latest read"),
+            writeLogLnF(F("No prior entry"),
                     logError);
-        forceRebase = false;
+        sendRebase = false;
     }
 }
 
@@ -2371,21 +2531,20 @@ void checkMeterTimer(){
 
         Two variants of update message - one with CT clamp current, one without.
 
-        MUP_:  meter update (to gateway) - a digest of timestamped accumulation
-                meter readings without current reads
-        format: MUP_,1 of [<meter_time_start>, <meter_value_start>];
-                    2..n of [<interval_duration>, <interval_value>]
-        e.g.:   MUP_,1496842913428,18829393;15,1;15,5;15,2;16,3;
-        should fit 4 entries unless using > 999Wh per interval
+        MUPC:   meter update (to gateway) - a digest of timestamped accumulation
+                meter readings with current reads.  Limited to 2 entries.
 
-        MUPC:  meter update (to gateway) - a digest of timestamped accumulation
-                meter readings with current reads
-        format: MUPC,1 of [<meter_time_start>, <meter_value_start>];
-                2..n of
-                    [<interval_duration>, <interval_value>, <spot_rms_current>]
-        e.g.:
-            MUPC,1496842913428,18829393;15,1,10.2;15,5,10.7;
-        should fit 2-3 entries
+        format:     MUPC;<node_id>,MUPC,1 of [<last_entry_finish_time>,<last_entry_meter_value>];
+                    2..n of [<interval_duration>, <interval_value>, <spot_rms_current>]
+        e.g.:       MUPC;2,MUPC,1496842913428,18829393;15,1,10.2;15,5,10.7;
+
+        MUP_:   meter update (to gateway) - a digest of timestamped accumulation
+                meter readings without current reads.  Should fit 4 entries
+                unless using > 999Wh per interval.
+        format:     MUP_;<node_id>,MUP_,1 of [<last_entry_finish_time>, <last_entry_meter_value>];
+                    2..n of [<interval_duration>, <interval_value>];
+        e.g.:       MUP_;2,MUP_,1496842913428,18829393;15,1;15,5;15,2;16,3;
+
      */
 
      // Meter reads are counted in a raw counter variable and put into the
@@ -2406,6 +2565,7 @@ void checkMeterTimer(){
             (getNowTimestampSec() - whenLastMeterMsg >=
                 MAX_METER_MSG_INTERVAL_SEC))
             ){
+
         // write beginning of message
         if (CT_ENABLED)
             sprintf_P(msgBuffStr, RMSG_MUPC);  // msg_type with CT
@@ -2415,46 +2575,52 @@ void checkMeterTimer(){
         static uint8_t max_meter_elements;
         max_meter_elements = CT_ENABLED ? 2: METER_MSG_MAX_ELEMENTS;
 
-        // get start timestamp and meter value (i.e. result of previous read
-        // sent)
-        uint32_t lastTime =
-                meterReadBuffer[getMtrBuffIxOffset(mrbPopNext, -1)].readTime;
-        uint32_t lastRead =
-                meterReadBuffer[getMtrBuffIxOffset(mrbPopNext, -1)].meterValue;
+        // get start timestamp and meter value (i.e. result of previous entry
+        // sent).  Last entry finished 1s (inclusive) before next entry to be popped started.
+        uint32_t lastEntryFinishTime =
+                MeterEntryBuffer[mrbPopNext].entryStartTime - 1;
+        uint32_t lastEntryAccumValue = getMeterWhValue(meterBaseValue,
+                MeterEntryBuffer[getMtrBuffIxOffset(mrbPopNext, -1)].meterImpCount);
 
-        sprintf(msgBuffStr, "%s,%lu,%lu", msgBuffStr, lastTime, lastRead);
+        sprintf(msgBuffStr, "%s,%lu,%lu", msgBuffStr, lastEntryFinishTime, lastEntryAccumValue);
 
         if (SEND_METER_TIMER_ONLY &&
                 newClosedMeterEntries >= METER_MSG_MAX_ELEMENTS)
-            // just send a single 'full' message, ignoring older reads as we are
+            // just send a single 'full' message, fast-forwarding/ ignoring older entries as we are
             // sending on a timer advance meter buffer read pointer accordingly
-            // if we have more reads than will fit
+            // if we have more entries than will fit
             mrbPopNext =
                 getMtrBuffIxOffset(mrbPushNext, (-1 - METER_MSG_MAX_ELEMENTS));
 
         static uint8_t i;
         i = 1;
 
-        // append remaining reads until ring buffer empty or we 'fill'
+        // append remaining entries until ring buffer empty or we 'fill'
         // the message
 
-        bool gotRead = true;
+        static bool gotRead;
+        gotRead = true;
 
         while (gotRead && (i <= max_meter_elements)){
             gotRead = popFromMeterBuffer(tmpRead, false);
             if (gotRead){
-                if (tmpRead.readTime >= lastTime && tmpRead.meterValue >=
-                        lastRead){
+                tmpInt = getMeterWhValue(meterBaseValue, tmpRead.meterImpCount);
+                // skip if doesn't follow last entry (lower time/accum values should have rebase, so should
+                // never happen)
+                if (tmpRead.entryStartTime >= lastEntryFinishTime && tmpInt >= lastEntryAccumValue){
                     sprintf(msgBuffStr, "%s;%lu,%lu", msgBuffStr,
-                        tmpRead.readTime - lastTime,
-                        tmpRead.meterValue - lastRead);
+                        // need to get entries actual close time (not start) to determine true
+                        // duration after message's baseline 'time start'
+                        MeterEntryBuffer[mrbPopNext].entryStartTime - tmpRead.entryStartTime,
+                        tmpInt - lastEntryAccumValue);
+
                     if (CT_ENABLED)
                         sprintf(msgBuffStr, "%s,%d.%01d", msgBuffStr,
                             (int)tmpRead.rmsCurrent,
                             (int)(tmpRead.rmsCurrent*100)%100);
                 }
-                lastTime = tmpRead.readTime;
-                lastRead = tmpRead.meterValue;
+                lastEntryFinishTime = MeterEntryBuffer[mrbPopNext].entryStartTime - tmpRead.entryStartTime;
+                lastEntryAccumValue = tmpInt;
             }
             i++;
         }
@@ -2473,30 +2639,32 @@ void checkGWInstTimer(){
 
        GINR:
                Instruction request (to gateway).  Also includes status data.
-       format: GINR;<battery_voltage>,<uptime_secs>,<sleeptime_secs>,<free_ram>,
+       format: GINR,<battery_voltage>,<uptime_secs>,<sleeptime_secs>,<free_ram>,
                     <last_rssi>,<puck_led_rate>,<puck_led_time>,
-                    <meter_interval_time>
-       e.g.:   GINR;4300,890000,555000,880,-80,10,100,5
+                    <meter_interval_time>,<meter_imp_per_kwh>
+       e.g.:   GINR,4300,890000,555000,880,-80,10,100,5,1000
      */
 
-     // check for missed instruction messages
-    checkRadioMsg();
+    // check if temporary fast GINR polling needs to be reset
+    if (ginrMsgIntervalSec != DEF_GINR_MSG_INTERVAL_SEC &&
+            getNowTimestampSec() - whenTmpGinrStart >= tmpGinrPollPeriod)
+        ginrMsgIntervalSec = DEF_GINR_MSG_INTERVAL_SEC;
+
     if (whenLastGInstMsg == 0 || (getNowTimestampSec() - whenLastGInstMsg) >=
-            GINR_MSG_INTERVAL_SEC){
+            ginrMsgIntervalSec){
         checkBatt();
         static uint32_t secondsUptime;
         secondsUptime = getNowTimestampSec() - whenBooted;
 
         sprintf_P(msgBuffStr, RMSG_GINR);
-        sprintf(msgBuffStr, "%s,%d,%lu,%lu,%d,%d,%hhu,%d,%hhu", msgBuffStr,
+        sprintf(msgBuffStr, "%s,%d,%lu,%lu,%d,%d,%hhu,%d,%hhu,%d", msgBuffStr,
                 vinVoltageMV, secondsUptime, secondsSlept, freeRAM(),
                 lastRSSIAtNode, cfgPuckLEDRate, cfgPuckLEDTime,
-                cfgMeterInterval);
+                cfgMeterInterval, cfgMeterImpPerKwh);
 
         sendRadioMsg(cfgGatewayId, true);
         whenLastGInstMsg = getNowTimestampSec();
     }
-
 }
 
 void checkGWClockSync(){
@@ -2520,6 +2688,7 @@ void checkGWClockSync(){
 
 
 void blinkLED(uint8_t blinkTimes){
+    // TODO: remove use of delay if using outside of boot, button events
     for (uint8_t i = 1; i <= blinkTimes; i++){
         PORTD = PORTD | B00010000;  // on
         delay(500);
@@ -2532,14 +2701,14 @@ void blinkLED(uint8_t blinkTimes){
 void checkTestMode(){
     /*
         If test mode is enabled via TESTMODE serial commmand, simulates meter
-        LED pulses at TEST_METER_PULSE_INTERVAL (minimum delay between pulses)
-        with TEST_METER_PULSE_TIME setting the duration of the pulse itself
+        LED pulses at TEST_METER_IMP_INTERVAL (minimum delay between pulses)
+        with TEST_METER_IMP_TIME setting the duration of the pulse itself
         (pulse width).
     */
     if (!testMode)
         return;
 
-    if (testPulseOn && millis() - whenTestPulseChange >= TEST_METER_PULSE_TIME){
+    if (testPulseOn && millis() - whenTestPulseChange >= TEST_METER_IMP_TIME){
         // pulse is on, pulse time is up, so turn off, simulate rising edge, and
         // reset timer.
         testPulseOn = false;
@@ -2547,7 +2716,7 @@ void checkTestMode(){
         whenTestPulseChange = millis();
     }
     else if (!testPulseOn && millis() - whenTestPulseChange >=
-            TEST_METER_PULSE_INTERVAL){
+            TEST_METER_IMP_INTERVAL){
         // pulse is off, interval time is up, so turn on, simulate falling edge.
         testPulseOn = true;
         watchedLEDOn();
@@ -2678,7 +2847,7 @@ void printResetVal(uint8_t resetVal){
     // unknown - should not happen
         writeLogF(F(" UN"), logNull);
 
-    printNewLine();
+    printNewLine(logNull);
 }
 
 
@@ -2691,11 +2860,15 @@ void setup() {
     digitalWrite(PUCK_LED_PIN, LOW);
 
     pinMode(VIN_DIV_PIN, INPUT);
-    pinMode(CT_CLAMP_PIN, INPUT);
 
     // ensure PR_INTERRUPT_PIN is not pulled up as this will 'defeat' trimpot
     // (reduce resistance on line by providing lower resistance path from 3V3)
     pinMode(PR_INTERRUPT_PIN, INPUT);
+
+    if (CT_ENABLED)
+        pinMode(CT_CLAMP_PIN, INPUT);
+    else
+        pinMode(CT_CLAMP_PIN, INPUT_PULLUP);
 
     // disconnected pins 'pulled up' rather than left floating
     pinMode(5, INPUT_PULLUP);
@@ -2711,8 +2884,8 @@ void setup() {
         delay(1);
     Serial.begin(SERIAL_BAUD);
 
-    printNewLine();
-    printNewLine();
+    printNewLine(logNull);
+    printNewLine(logNull);
     writeLogLnF(F("===BOOT==="), logNull);
     printResetVal(resetFlags);
 
@@ -2721,24 +2894,34 @@ void setup() {
     applyRadioConfig();
 
     // initialise RTC, set time to default (should be overridden by update
-    // from gateway)
+    // from gateway); needs to follow applyRadioConfig()
     writeLogLnF(F("Clock Init"), logDebug);
     rtc.reset();
-    setNowTimestampSec(INIT_TIME);      // will leave SPI CS/SS pin high/off
+
+    checkGWClockSync();
+    // set time to INIT_TIME if clock sync failed
+
+    tmpTime = getNowTimestampSec();
+    if (tmpTime < INIT_TIME || tmpTime > MAX_TIME)
+        setNowTimestampSec(INIT_TIME, true, false);
+    // force rebase if RTC was already set to correct time, i.e. no initialised
+    // entry in meter entry buffer.  Assume alignment to mm:00 sec at boot.
+    else if (MeterEntryBuffer[mrbPushNext].entryStartTime == 0)
+        setNowTimestampSec(tmpTime, true, true);
 
     blinkLED(3);
 
-    whenBooted = getNowTimestampSec();
-
-    wdt_enable(WDTO_8S);    //Time for wait before autoreset
+    whenBooted = tmpTime;
 
     sprintf_P(msgBuffStr, RMSG_GMSG);
     sprintf(msgBuffStr, "%s,BOOT v%hhu. Flags: %hhu", msgBuffStr, FW_VERSION,
             resetFlags);
     sendRadioMsg(cfgGatewayId, false);
 
-    emon1.current(CT_CLAMP_PIN, CT_IRMS_CORRECT_MULT);
+    if (CT_ENABLED)
+        emon1.current(CT_CLAMP_PIN, CT_IRMS_CORRECT_MULT);
 
+    wdt_enable(WDTO_8S);    //Time for wait before autoreset
 }
 
 
