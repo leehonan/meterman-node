@@ -182,17 +182,30 @@ With the MeterNode on and the puck installed, connected:
 Given that the actual hystersis gap of the comparator circuit is ~10mV, in theory a small swing either side of CREF will be sufficient to produce a definite high/low reading.  However, using a very wide value will compensate for fluctuations in ambient light and other factors.
 
 ### CT Clamp Setup
-TODO
+The design and firmware assumes a YHDC SCT-013-000 CT clamp, which has 100A max current.
+
+A 22 Ohm burden resistor is used to output a voltage proportionate to CT clamp's secondary coil voltage.  
+
+This configuration can measure up to 97A (23.3kW @ 240V).  The minimum reliable detection current is 0.3A, with potential for noise below this.  The constant CT_IRMS_HIGH_PASS is used to set a high-pass filter (0.3A by default).
+
+WARNING: Be careful not to unplug the CT clamp from node while it's clamped to a 'live wire'.  It may shock.  There is a protection diode in the clamp, but its protection shouldn't be relied upon.
+
 
 ### Uploading Firmware
-Firmware is uploaded using avrdude (alternately through an IDE such as atom/platform.io, the Arduino IDE may work too).  For an FTDI adapter with Id A403JXEV on OSX or Linux the command will be something like:
+Firmware is uploaded using avrdude (alternately through an IDE such as atom/platform.io, the Arduino IDE may work too).  For an FTDI adapter with Id A403JXEV on OSX or Linux the command will be something like (change device and path to firmware):
 
 ```
 sudo avrdude -c arduino -p atmega328p -P /dev/cu.usbserial-A403JXEV -b 115200 -U flash:w:/home/tmp/firmware.hex
 ```
 
 ### Serial Communication & Console
-A serial connection can be made using a baud of 115200bps, 8N1 (8 data bits, no parity bit, 1 stop bit).  
+A serial connection can be made using a baud of 115200bps, 8N1 (8 data bits, no parity bit, 1 stop bit).  E.g. with minicom and a FTDI adapter at /dev/cu.usbserial-A403JXEV:
+
+```
+sudo minicom -b 115200 -o -D /dev/cu.usbserial-A403JXEV
+```
+
+Note that connecting or disconnecting a FTDI adapter will not cause a reboot when running on battery power.
 
 The following commands are available through the serial console (case-insensitive):
 
@@ -200,6 +213,7 @@ The following commands are available through the serial console (case-insensitiv
 | :--- |:---|
 | help | Prints a list of commands. |
 | z  | Toggles sleep on and off. |
+| ctcl | Toggles CT Clamp on and off. |
 | dump  | Prints (dumps) MeterNode config and status to the console.  |
 | rcfg | Reset Config.  Resets configuration values stored in EEPROM to defaults and re-applies these.  |
 | time | Prints current time from RTC. Set using time=[seconds since UNIX epoch, UTC] |
@@ -219,7 +233,7 @@ The following commands are available through the serial console (case-insensitiv
 
 
 ### Radio Protocol
-The MeterNode uses the the [RadioHead Library](http://www.airspayce.com/mikem/arduino/RadioHead/), and 'Reliable Datagrams' for all messaging.
+The MeterNode uses the [RadioHead Library](http://www.airspayce.com/mikem/arduino/RadioHead/), and 'Reliable Datagrams' for all messaging.
 
 Messages are AES-128 encrypted, with a maximum payload of 61 bytes.  Fields are comma-delimited, records semi-colon-delimited (only used for meter updates).
 
@@ -278,8 +292,8 @@ Using the puck LED (which consumes about 1mA) to indicate a meter LED flash will
 ## Implementation - MeterNode Firmware
 For simplicity, the firmware is implemented as a single C++ program (no header file), although it will need supporting libraries to compile.  There is some redundancy versus the companion gateway firmware - the common components may be moved to a library.  Some Arduino library features are used.
 
-The firmware requires a 328P that has been flashed with Optiboot.  It uses about 98% of
-available program memory with CT_ENABLED=true (which will cause the compiler to include code for the CT clamp).  Depending on configuration, about 500 bytes RAM will remain free at runtime (of 2K).  
+The firmware requires a 328P that has been flashed with Optiboot.  It uses practically all of
+available program flash memory.  Depending on configuration, about 400 bytes RAM will remain free at runtime (of 2K).  
 
 There are a number of configuration settings at the beginning of the source code.  Particular attention should be paid to the 'Main Config Parameters'.
 

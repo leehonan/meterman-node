@@ -88,7 +88,10 @@
 // https://github.com/openenergymonitor/EmonLib
 #include <EmonLib.h>
 
-static const int8_t FW_VERSION = 6;
+static const int8_t FW_VERSION = 7;
+
+// Whether a CT clamp is installed
+uint8_t cfgCTEnabled = 0;
 
 // Log Levels
 typedef enum {
@@ -152,8 +155,6 @@ static const uint16_t DEF_METER_IMP_PER_KWH = 1000;
 // update message should  be significantly less than the 'node dark' threshold
 // set at the gateway.
 static const uint8_t DEF_METER_INT_RES_SEC = 60;
-
-static const bool CT_ENABLED = true;
 
 // *****************************************************************************
 //    General Init - Pins
@@ -262,6 +263,9 @@ static const char SER_CMD_HELP[] PROGMEM = "HELP";
 // sleep toggle
 static const char SER_CMD_SLEEP[] PROGMEM = "Z";
 
+// CT Clamp toggle
+static const char SER_CMD_CT_TOGGLE[] PROGMEM = "CTCL";
+
 // dump meter state to console
 static const char SER_CMD_DUMP[] PROGMEM = "DUMP";
 
@@ -311,8 +315,9 @@ static const char SER_CMD_LEDR[] PROGMEM = "LEDR";
 // print/set puck LED time (set with LEDT=[time in millis])
 static const char SER_CMD_LEDT[] PROGMEM = "LEDT";
 
-// Array of commands, used to print list on help or invalid input
-const char* const SER_CMDS[] PROGMEM = {SER_CMD_HELP, SER_CMD_SLEEP,
+// Array of commands, used to print list on help or input
+const char* const SER_CMDS[] PROGMEM = {
+        SER_CMD_HELP, SER_CMD_SLEEP, SER_CMD_CT_TOGGLE,
         SER_CMD_DUMP, SER_CMD_RCFG, SER_CMD_TIME, SER_CMD_LOGL, SER_CMD_EKEY,
         SER_CMD_NETI, SER_CMD_GWID, SER_CMD_NOID, SER_CMD_TRSS, SER_CMD_TXPW,
         SER_CMD_MTRV, SER_CMD_MTRR, SER_CMD_MTRI, SER_CMD_TEST, SER_CMD_LEDR,
@@ -409,7 +414,7 @@ uint16_t vinVoltageMV = 0;
 EnergyMonitor emon1;
 static const float CT_IRMS_CORRECT_MULT = 111.1;
 static const float CT_AC_VOLTAGE = 230.0;
-static const double CT_IRMS_HIGH_PASS = 0.2;  // seems unreliable below 0.2
+static const double CT_IRMS_HIGH_PASS = 0.3;  // seems unreliable below 0.3 A
 static const int16_t CT_NUM_SAMPLES = 1480;   // proportionate to AC cycle, freq
 
 // *****************************************************************************
@@ -520,9 +525,9 @@ typedef enum {
 } MeterEntryState;
 
 // Meter buffer is a ring buffer (circular queue) to hold last 'n' meter entries
-// with accumulated impulse count and time, with oldest element being overwritten
-// on overflow.  If an interval of > 0 is set, these will be interval entries
-// (not discrete reads)
+// with accumulated impulse count and time, with oldest element being
+// overwritten on overflow.  If an interval of > 0 is set, these will be
+// interval entries (not discrete reads)
 
 // Time is since UNIX epoch, resolution is seconds; as millis is
 // challenged by RTC resolution, message sizes, and effects of sleeping on
@@ -566,21 +571,20 @@ uint8_t mrbPushNext = 0;
 // changed to only send the most recent n reads at the interval specified - for
 // higher-frequency meters.
 
-// max time/read elements per 60B MUP message - forced to 2 if CT_ENABLED
+// max time/read elements per 60B MUP message - forced to 2 if cfgCTEnabled
 static const uint8_t METER_MSG_MAX_ELEMENTS = 4;
 
 // Max seconds delay between sending out meter messages.  Favour meter interval
 // duration to control msg rate, use this as a fallback for low frequency
 // metering.
-static const uint8_t MAX_METER_MSG_INTERVAL_SEC = 180;
+static const uint16_t MAX_METER_MSG_INTERVAL_SEC = 300;
 
 // whether to only send latest METER_MSG_MAX_ELEMENTS on
 // MAX_METER_MSG_INTERVAL_SEC in a single message, ignoring older reads.
 static const bool SEND_METER_TIMER_ONLY = false;
 
 // The number of 'watched meter' LED flash/impulses per 'puck' LED flash in
-// response.  E.g. could flash once every 10 to consume battery.  0 means LED is
-// disabled (except to indicate boot).
+// response.  E.g. could flash once every 10 to consume battery.  0 means LED // is disabled (except to indicate boot).
 static const uint8_t DEF_METER_IMP_PER_LED_PULSE = 0;
 
 volatile uint32_t whenPuckLEDOn = 0ul;  //millis
@@ -601,7 +605,8 @@ static const uint16_t DEF_LED_IMP_TIME_MS = 100;
 // Create an rtc object.  If power has been lost will be 1 Jan 1970 00:00:00.
 PCF2123 rtc(RTC_SS_PIN);
 
-// Max acceptable latency of ping req/resp interaction with Gateway to set clock
+// Max acceptable latency of ping req/resp interaction with Gateway to cause
+// RTC to be set to gateway time.
 static const uint8_t SYNC_TIME_MAX_DRIFT_SEC = 3;
 
 // Default UNIX epoch time in case RTC has an invalid timestamp and needs to be
@@ -649,22 +654,18 @@ void println_P(const char* flashStr){
 
 
 void printLogLevel(LogLev logLevel, bool printColon){
-    switch (logLevel) {
-        case logNull:
-            return;
-        case logError:
-            print_P(LOG_ERROR_LBL);
-            break;
-        case logWarn:
-            print_P(LOG_WARN_LBL);
-            break;
-        case logInfo:
-            print_P(LOG_INFO_LBL);
-            break;
-        case logDebug:
-            print_P(LOG_DEBUG_LBL);
-            break;
-    }
+    if (logLevel == logNull)
+        return;
+
+    if (logLevel == logError)
+        print_P(LOG_ERROR_LBL);
+    else if (logLevel == logWarn)
+        print_P(LOG_WARN_LBL);
+    else if (logLevel == logInfo)
+        print_P(LOG_INFO_LBL);
+    else if (logLevel == logDebug)
+        print_P(LOG_DEBUG_LBL);
+
     if (printColon)
         Serial.write(": ");
 }
@@ -810,7 +811,7 @@ void printPrompt(){
 
 
 void printNetworkId(){
-    writeLogF(F("Net Id: "), logNull);
+    writeLogF(F("Net Id="), logNull);
     writeLog(cfgNetworkId1, logNull);
     writeLogF(F("."), logNull);
     writeLog(cfgNetworkId2, logNull);
@@ -827,7 +828,8 @@ uint32_t getMeterWhValue(uint32_t baseValue, uint32_t meterImpCount){
         rounded to the nearest Wh.
      */
 
-    return (uint32_t) (baseValue + 0.5f + (meterImpCount * (1000.0f / cfgMeterImpPerKwh)));
+    return (uint32_t) (baseValue + 0.5f
+                        + (meterImpCount * (1000.0f / cfgMeterImpPerKwh)));
 }
 
 
@@ -849,14 +851,6 @@ void printCmdHelp(){
     printNewLine(logNull);
 }
 
-bool strStartsWith(const char *strBody, const char *strPrefix){
-    /*
-        Tests if string starts with given prefix.  Case insensitive.
-     */
-
-    return (strncasecmp(strBody, strPrefix, strlen(strPrefix)) == 0);
-}
-
 
 uint8_t strStartsWithP(const char *strBody, const char *strPrefix){
     /*
@@ -867,7 +861,7 @@ uint8_t strStartsWithP(const char *strBody, const char *strPrefix){
     static char withEq [] = "";
     strcpy_P(withEq, strPrefix);
     strcat_P(withEq, PSTR("="));
-    if(strStartsWith(strBody, withEq))
+    if(strncasecmp(strBody, withEq, strlen(withEq)) == 0)
         return 2;   // setter
     else if(strncasecmp_P(strBody, strPrefix, strlen_P(strPrefix)) == 0)
         return 1;   // getter/normal
@@ -880,6 +874,9 @@ double getRMSCurrent(){
     /*
         Returns RMS Current from CT clamp in amps.
      */
+    if (cfgCTEnabled == 0)
+        return 0.0;
+
     static double irmsCurrent = 0.0;
     irmsCurrent = emon1.calcIrms(CT_NUM_SAMPLES);
     if (irmsCurrent > CT_IRMS_HIGH_PASS)
@@ -900,12 +897,13 @@ double getRMSPower(double rmsCurrent){
 void printCurrent(){
     static double irmsCurrent = 0.0;
     irmsCurrent = getRMSCurrent();
+
     printPrompt();
-    writeLogF(F("IRMS: "), logNull);
+    writeLogF(F("IRMS="), logNull);
     writeLog(irmsCurrent, logNull);
-    writeLogF(F(" A, PRMS: "), logNull);
+    writeLogF(F("A, PRMS="), logNull);
     writeLog(getRMSPower(irmsCurrent), logNull);
-    writeLogLnF(F(" W"), logNull);
+    writeLogLnF(F("W"), logNull);
 }
 
 
@@ -940,7 +938,7 @@ void printMeterBuffer(){
         Dumps meter buffer to serial (terminal)
      */
     printPrompt();
-    writeLogLnF(F("Meter: "), logNull);
+    writeLogLnF(F("Mtr="), logNull);
     for (uint8_t i = 0; i < METER_ENTRY_BUFFER_LEN; i++){
         printMeterBufferElement(i);
     }
@@ -974,8 +972,8 @@ uint32_t getNewmeterImpCount(uint32_t lastMeterImpCount, uint32_t readValue,
     // Need to handle cycling at receiver
 
     static bool meterOverflow;
-    meterOverflow = (getMeterWhValue(meterBaseValue, lastMeterImpCount + readValue)
-                    >= METER_MAX_VALUE);
+    meterOverflow = (getMeterWhValue(meterBaseValue,
+                        lastMeterImpCount + readValue) >= METER_MAX_VALUE);
 
     if (newAccumValue || meterOverflow) {
         if (meterOverflow)
@@ -990,13 +988,16 @@ uint32_t getNewmeterImpCount(uint32_t lastMeterImpCount, uint32_t readValue,
 
 void closeEntryCreateNew(bool readCurrent){
     // Finalise 'closed', ready to send meter entry, create new one
+
+    wdt_reset();
+
     if (readCurrent)
         MeterEntryBuffer[mrbPushNext].rmsCurrent = getRMSCurrent();
 
     // ensure entry is closed
     MeterEntryBuffer[mrbPushNext].entryState = entryClosed;
 
-    writeLogF(F(": Closed "), logDebug);
+    writeLogF(F("Closed "), logDebug);
     if (cfgLogLevel >= logDebug)
         printMeterBufferElement(mrbPushNext);
 
@@ -1021,7 +1022,7 @@ void closeEntryCreateNew(bool readCurrent){
     MeterEntryBuffer[mrbPushNext].rmsCurrent = 0.0;
     MeterEntryBuffer[mrbPushNext].entryState = entryOpen;
 
-    writeLogF(F(": Opened "), logDebug);
+    writeLogF(F("Opened "), logDebug);
     if (cfgLogLevel >= logDebug)
         printMeterBufferElement(mrbPushNext);
 
@@ -1039,10 +1040,12 @@ void checkStaleEntry(){
         event, also when checking if time to send message.
      */
 
+     wdt_reset();
+
      // check if entries need to be aligned to mm:00
      if (alignReads && getNowTimestampSec() >= alignReadingFrom){
          writeLogLnF(F("Algn=mm:00"), logInfo);
-         closeEntryCreateNew(CT_ENABLED);
+         closeEntryCreateNew((bool)cfgCTEnabled);
          // overwrite current entry's timestamp - coarse but simple
          MeterEntryBuffer[mrbPushNext].entryStartTime = alignReadingFrom;
          alignReads = false;
@@ -1079,7 +1082,7 @@ void checkStaleEntry(){
 
         // close currently open entry, and iterate through any subsequent that
         // need to be skipped
-        closeEntryCreateNew(CT_ENABLED);
+        closeEntryCreateNew((bool)cfgCTEnabled);
 
         // writeLogF(F("Skip intervals="), logDebug);
         // writeLogLn(intervalsToSkip, logDebug);
@@ -1115,7 +1118,7 @@ void pushToMeterBuffer(uint32_t entryStartTimestampSec, uint32_t readValue,
     else {
         // close previous entry if non-zero, i.e. will not fire at boot
         if (MeterEntryBuffer[mrbPushNext].meterImpCount > 0)
-            closeEntryCreateNew(CT_ENABLED);
+            closeEntryCreateNew((bool)cfgCTEnabled);
 
         // override time and value for new entry (or first at boot)
         MeterEntryBuffer[mrbPushNext].entryStartTime = entryStartTimestampSec;
@@ -1124,7 +1127,7 @@ void pushToMeterBuffer(uint32_t entryStartTimestampSec, uint32_t readValue,
                     readValue, true);  // handles overflow
 
         // close entry just created, create empty one
-        closeEntryCreateNew(CT_ENABLED);
+        closeEntryCreateNew((bool)cfgCTEnabled);
 
         // override new entry's timestamp to now if rebase
         if (rebase)
@@ -1292,7 +1295,7 @@ void getRTCTime(tmElements_t *nowTimeT){
 void printNowTime(LogLev logLevel) {
     static tmElements_t nowTimeT;
     getRTCTime(&nowTimeT);
-    writeLogF(F("Time: "), logLevel);
+    writeLogF(F("Time="), logLevel);
     printTime(nowTimeT, logLevel);
     writeLogF(F("/"), logLevel);
     writeLog(getNowTimestampSec(), logLevel);
@@ -1379,7 +1382,7 @@ void putConfigToMem(){
     */
 
     uint8_t eeAddress = 0;
-    writeLogLnF(F("Updt ROM"), logInfo);
+    // writeLogLnF(F("Updt ROM"), logInfo);
     wdt_reset();
     EEPROM.put(eeAddress, (uint8_t)cfgLogLevel);
     eeAddress += sizeof((uint8_t)cfgLogLevel);
@@ -1412,6 +1415,8 @@ void putConfigToMem(){
         EEPROM.put(eeAddress, cfgEncryptKey[i]);
         eeAddress++;
     }
+    EEPROM.put(eeAddress, cfgCTEnabled);
+    eeAddress += sizeof(cfgCTEnabled);
 }
 
 
@@ -1434,7 +1439,7 @@ void updatePuckLEDRate(uint8_t newRate, bool persist){
         attachInterrupt(digitalPinToInterrupt(PR_INTERRUPT_PIN),
                 watchedLEDOn, FALLING);
 
-    writeLogF(F("LED 1 per "), logNull);
+    writeLogF(F("LED 1:"), logNull);
     writeLogLn(cfgPuckLEDRate, logNull);
 
     if (persist)
@@ -1455,7 +1460,7 @@ void getConfigFromMem(){
     uint8_t byteValArray[KEY_LENGTH] = {0};
     bool EEPROMValid = true;
 
-    writeLogLnF(F("Read ROM"), logInfo);
+    // writeLogLnF(F("Read ROM"), logInfo);
     wdt_reset();
     EEPROM.get(eeAddress, byteVal);
     if (byteVal >= logNull && byteVal <= logDebug)
@@ -1565,8 +1570,14 @@ void getConfigFromMem(){
         memcpy(cfgEncryptKey, byteValArray, sizeof(byteValArray));
     }
 
+    EEPROM.get(eeAddress, byteVal);
+    if (byteVal >= 0 && byteVal <= 1)
+        cfgCTEnabled = byteVal;
+    else
+        EEPROMValid = false;
+
     if (! EEPROMValid){
-        writeLogLnF(F("ROM Invalid"), logError);
+        writeLogLnF(F("ROM Bad"), logError);
         resetConfig();
         putConfigToMem();
     }
@@ -1582,7 +1593,7 @@ void applyRadioConfig(){
        radio params, reinitialising, even though RTC has SPI SS High
     */
 
-    writeLogLnF(F("Radio Init"), logDebug);
+    // writeLogLnF(F("Radio Init"), logDebug);
 
     // hack - get time
     tmpTime = getNowTimestampSec();
@@ -1634,6 +1645,7 @@ void resetConfig(){
     cfgNetworkId3 = DEF_NETWORK_ID_O3;
     cfgNetworkId4 = DEF_NETWORK_ID_O4;
     memcpy(cfgEncryptKey, DEF_ENCRYPT_KEY, KEY_LENGTH);
+    cfgCTEnabled = 0;
     putConfigToMem();
     applyRadioConfig();
 }
@@ -1643,9 +1655,9 @@ bool changeTXPower(int8_t newValue, bool toMem){
     if (! isTXPowValid(newValue))
         return false;
 
-    writeLogF(F("TXPow: "), logInfo);
+    writeLogF(F("TXPow="), logInfo);
     writeLog(newValue, logInfo);
-    writeLogF(F(", Avg RSSI: "), logInfo);
+    writeLogF(F(", Avg RSSI="), logInfo);
     writeLogLn(averageRSSIAtGateway, logInfo);
 
     cfgTXPower = newValue;
@@ -1655,7 +1667,7 @@ bool changeTXPower(int8_t newValue, bool toMem){
     radio.setTxPower(cfgTXPower, RADIO_HIGH_POWER);
 
     sprintf_P(msgBuffStr, RMSG_GMSG);
-    sprintf(msgBuffStr, "%s,%s %d", msgBuffStr, "Set TXPow to", cfgTXPower);
+    sprintf(msgBuffStr, "%s,%s %d", msgBuffStr, "Set TXPow=", cfgTXPower);
     sendRadioMsg(cfgGatewayId, false);
 
     radio.sleep();
@@ -1697,7 +1709,7 @@ void checkTXtoRSSI(){
 
 void toggleSleepMode(){
     canSleep = !canSleep;
-    writeLogF(F("Slp: "), logNull);
+    writeLogF(F("Slp="), logNull);
     writeLogLnF(canSleep ? F("ON") : F("OFF"), logNull);
 }
 
@@ -1783,56 +1795,67 @@ void checkSerialInput() {
         if (strStartsWithP(serInBuff, SER_CMD_DUMP) == 1){
             tmpRead = MeterEntryBuffer[mrbPushNext];
             printPrompt();
-            writeLogF(F("Mtr Base Val: "), logNull);
+            writeLogF(F("Base Val="), logNull);
             printWhValue(getMeterWhValue(meterBaseValue, 0), logNull);
 
-            writeLogF(F(", Val: "), logNull);
+            writeLogF(F(", Val="), logNull);
             printWhValue(getMeterWhValue(meterBaseValue, tmpRead.meterImpCount),
             logNull);
             printNewLine(logNull);
 
-            if (CT_ENABLED)
-                printCurrent();
+            printCurrent();
 
             printPrompt();
-            writeLogF(F("Raw: "), logNull);
+            writeLogF(F("Raw="), logNull);
             writeLogLn(newRawMeterReads, logNull);
 
             printPrompt();
-            writeLogF(F("Closed Ent: "), logNull);
+            writeLogF(F("Closed Ent="), logNull);
             writeLogLn(newClosedMeterEntries, logNull);
 
             printPrompt();
-            writeLogF(F("Last MUP: "), logNull);
+            writeLogF(F("Last MUP="), logNull);
             writeLogLn(whenLastMeterMsg, logNull);
 
             printPrompt();
-            writeLogF(F("Push Ix: "), logNull);
+            writeLogF(F("Push Ix="), logNull);
             writeLogLn(mrbPushNext, logNull);
 
             printPrompt();
-            writeLogF(F("Pop Ix: "), logNull);
+            writeLogF(F("Pop Ix="), logNull);
             writeLogLn(mrbPopNext, logNull);
 
             printMeterBuffer();
 
             printPrompt();
-            writeLogF(F("Batt (mV): "), logNull);
+            writeLogF(F("Batt (mV)="), logNull);
             writeLogLn(vinVoltageMV, logNull);
 
             printPrompt();
-            writeLogF(F("Free RAM (B): "), logNull);
+            writeLogF(F("Free RAM="), logNull);
             writeLogLn(freeRAM(), logNull);
 
             printPrompt();
-            writeLogF(F("Can Slp: "), logNull);
+            writeLogF(F("Can Slp="), logNull);
             writeLogLnF(canSleep ? F("Y"): F("N"), logNull);
 
             printPrompt();
-            writeLogF(F("Slept (s): "), logNull);
+            writeLogF(F("Slept="), logNull);
             writeLogLn(secondsSlept, logNull);
 
             cmdStatus = dump;
+        }
+
+        // toggle CT Clamp
+        if (strStartsWithP(serInBuff, SER_CMD_CT_TOGGLE) == 1){
+            cfgCTEnabled = (cfgCTEnabled == 1) ? 0 : 1;
+            cmdStatus = valid;
+        }
+
+        if (cmdStatus == dump || strStartsWithP(serInBuff,
+                    SER_CMD_CT_TOGGLE) == 1){
+            printPrompt();
+            writeLogLnF((cfgCTEnabled == 1) ? F("CT=Y") : F("CT=N"), logNull);
         }
 
         // reset config
@@ -1889,7 +1912,7 @@ void checkSerialInput() {
         // print log level, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_LOGL) >= 1){
             printPrompt();
-            writeLogF(F("LogLev: "), logNull);
+            writeLogF(F("LogLev="), logNull);
             printLogLevel(cfgLogLevel, false);
             printNewLine(logNull);
             if (cmdStatus != dump)
@@ -1915,7 +1938,7 @@ void checkSerialInput() {
         // print radio encryption key, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_EKEY) >= 1){
             printPrompt();
-            writeLogF(F("Key: "), logNull);
+            writeLogF(F("Key="), logNull);
             Serial.write(cfgEncryptKey, sizeof(cfgEncryptKey));
             printNewLine(logNull);
             if (cmdStatus != dump)
@@ -1974,7 +1997,7 @@ void checkSerialInput() {
         // print gateway id, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_GWID) >= 1){
             printPrompt();
-            writeLogF(F("Gway Id: "), logNull);
+            writeLogF(F("Gway Id="), logNull);
             writeLogLn(cfgGatewayId, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
@@ -2000,7 +2023,7 @@ void checkSerialInput() {
         // print node id, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_NOID) >= 1){
             printPrompt();
-            writeLogF(F("Node Id: "), logNull);
+            writeLogF(F("Node Id="), logNull);
             writeLogLn(cfgNodeId, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
@@ -2044,22 +2067,23 @@ void checkSerialInput() {
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_TRSS) >= 1 ||
                 strStartsWithP(serInBuff, SER_CMD_TXPW) >= 1){
             printPrompt();
-            writeLogF(F("TX Pow: "), logNull);
+            writeLogF(F("TX Pow="), logNull);
             writeLogLn(cfgTXPower, logNull);
             printPrompt();
-            writeLogF(F("Target RSSI: "), logNull);
+            writeLogF(F("Tgt RSSI="), logNull);
             writeLogLn(cfgTgtRSSI, logNull);
             printPrompt();
-            writeLogF(F("Last Gway SSI: "), logNull);
+            writeLogF(F("Last Gway SSI="), logNull);
             writeLogLn(lastRSSIAtNode, logNull);
             printPrompt();
-            writeLogF(F("Avg RSSI @ Gway: "), logNull);
+            writeLogF(F("Avg RSSI@Gway="), logNull);
             writeLogLn(averageRSSIAtGateway, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
         }
 
-        // set meter value, setting meter base value and resetting meter buffer to 0
+        // set meter value, setting meter base value and resetting meter buffer
+        // to 0
         if (strStartsWithP(serInBuff, SER_CMD_MTRV) == 2){
             strncpy(cmdVal, serInBuff + strlen_P(SER_CMD_MTRV) + 1,
                     (strlen(serInBuff) - strlen_P(SER_CMD_MTRV) -1));
@@ -2068,7 +2092,7 @@ void checkSerialInput() {
                 meterBaseValue = tmpInt;
                 pushToMeterBuffer(getNowTimestampSec(), 0, true);
                 printPrompt();
-                writeLogF(F("Set Mtr Val: "), logNull);
+                writeLogF(F("Set Mtr Val="), logNull);
                 printWhValue(getMeterWhValue(meterBaseValue,
                     MeterEntryBuffer[mrbPushNext].meterImpCount), logNull);
                 printNewLine(logNull);
@@ -2098,7 +2122,7 @@ void checkSerialInput() {
         // print meter impulse rate per kWh, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_MTRR) >= 1){
             printPrompt();
-            writeLogF(F("Imp/kWh: "), logNull);
+            writeLogF(F("Imp/kWh="), logNull);
             writeLogLn(cfgMeterImpPerKwh, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
@@ -2119,7 +2143,7 @@ void checkSerialInput() {
         // print meter interval, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_MTRI) >= 1){
             printPrompt();
-            writeLogF(F("Mtr Interval (s): "), logNull);
+            writeLogF(F("Mtr Interval="), logNull);
             writeLogLn(cfgMeterInterval, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
@@ -2131,7 +2155,7 @@ void checkSerialInput() {
                 if (testMode)
                     canSleep = false;
                 printPrompt();
-                writeLogF(F("Test: "), logNull);
+                writeLogF(F("Test="), logNull);
                 writeLogLnF(testMode ? F("ON") : F("OFF"), logNull);
                 cmdStatus = valid;
         }
@@ -2154,7 +2178,7 @@ void checkSerialInput() {
         // print puck LED rate, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_LEDR) >= 1){
             printPrompt();
-            writeLogF(F("LED: 1 per meter's "), logNull);
+            writeLogF(F("LED=1:"), logNull);
             writeLogLn(cfgPuckLEDRate, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
@@ -2179,7 +2203,7 @@ void checkSerialInput() {
         // print puck LED time, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_LEDT) >= 1){
             printPrompt();
-            writeLogF(F("LED Pulse (ms): "), logNull);
+            writeLogF(F("LED Pulse(ms)="), logNull);
             writeLogLn(cfgPuckLEDTime, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
@@ -2243,7 +2267,8 @@ void processMsgRecv(){
      else if (strStartsWithP(msgBuffStr, RMSG_MVAI) == 1){
         // get new meter value from message
         static uint32_t newMeterValue = 0ul;
-        sscanf (msgBuffStr, "%*[^,],%lu,%hhd", &newMeterValue, &lastRSSIAtGateway);
+        sscanf (msgBuffStr, "%*[^,],%lu,%hhd", &newMeterValue,
+                &lastRSSIAtGateway);
 
         if (newMeterValue > 0 && newMeterValue < METER_MAX_BASE_VALUE){
             meterBaseValue = newMeterValue;
@@ -2299,7 +2324,7 @@ void processMsgRecv(){
             writeLogLnF(F("Got MPLI: "), logInfo);
             updatePuckLEDRate((uint8_t) ledPulseRate, false);
             writeLog(cfgPuckLEDRate, logInfo);
-            writeLogF(F(" LED Pulse (ms): "), logInfo);
+            writeLogF(F(" LED Pulse (ms)="), logInfo);
             writeLogLn(cfgPuckLEDTime, logInfo);
             putConfigToMem();
         }
@@ -2417,7 +2442,7 @@ void sendRadioMsg(uint8_t recipient, bool checkReply){
             writeLogLnF(F("No ACK recv"), logInfo);
     }
     else {
-        writeLogF(F("Failed to send: "), logWarn);
+        writeLogF(F("Send fail: "), logWarn);
         writeLogLn(msgBuffStr, logWarn);
         // reset TX power to max in case too weak - auto-tuning will
         // detune as needed
@@ -2498,7 +2523,7 @@ void checkBatt(){
     //      * correction_multiplier
     vinVoltageMV = (getAvgAnalogVal(VIN_DIV_PIN) / VIN_DIV_VOLT_DIVISOR) *
                         VIN_DIV_RSCALE_MULT * VIN_DIV_CORRECT_MULT;
-    writeLogF(F("Battery V (mV): "), logDebug);
+    writeLogF(F("Battery V (mV)="), logDebug);
     writeLogLn(vinVoltageMV, logDebug);
 }
 
@@ -2539,14 +2564,17 @@ void checkMeterTimer(){
         MUPC:   meter update (to gateway) - a digest of timestamped accumulation
                 meter readings with current reads.  Limited to 2 entries.
 
-        format:     MUPC;<node_id>,MUPC,1 of [<last_entry_finish_time>,<last_entry_meter_value>];
-                    2..n of [<interval_duration>, <interval_value>, <spot_rms_current>]
+        format:     MUPC;<node_id>,MUPC,1 of [<last_entry_finish_time>,
+                    <last_entry_meter_value>];
+                    2..n of [<interval_duration>, <interval_value>,
+                    <spot_rms_current>]
         e.g.:       MUPC;2,MUPC,1496842913428,18829393;15,1,10.2;15,5,10.7;
 
         MUP_:   meter update (to gateway) - a digest of timestamped accumulation
                 meter readings without current reads.  Should fit 4 entries
                 unless using > 999Wh per interval.
-        format:     MUP_;<node_id>,MUP_,1 of [<last_entry_finish_time>, <last_entry_meter_value>];
+        format:     MUP_;<node_id>,MUP_,1 of [<last_entry_finish_time>,
+                    <last_entry_meter_value>];
                     2..n of [<interval_duration>, <interval_value>];
         e.g.:       MUP_;2,MUP_,1496842913428,18829393;15,1;15,5;15,2;16,3;
 
@@ -2572,28 +2600,32 @@ void checkMeterTimer(){
             ){
 
         // write beginning of message
-        if (CT_ENABLED)
+        if (cfgCTEnabled == 1)
             sprintf_P(msgBuffStr, RMSG_MUPC);  // msg_type with CT
         else
             sprintf_P(msgBuffStr, RMSG_MUP_);  // msg_type without CT
 
-        static uint8_t max_meter_elements;
-        max_meter_elements = CT_ENABLED ? 2: METER_MSG_MAX_ELEMENTS;
+        static uint8_t maxMeterElements;
+        maxMeterElements = (cfgCTEnabled == 1) ? 2 : METER_MSG_MAX_ELEMENTS;
 
         // get start timestamp and meter value (i.e. result of previous entry
-        // sent).  Last entry finished 1s (inclusive) before next entry to be popped started.
+        // sent).  Last entry finished 1s (inclusive) before next entry to be
+        // popped started.
         uint32_t lastEntryFinishTime =
                 MeterEntryBuffer[mrbPopNext].entryStartTime - 1;
         uint32_t lastEntryAccumValue = getMeterWhValue(meterBaseValue,
-                MeterEntryBuffer[getMtrBuffIxOffset(mrbPopNext, -1)].meterImpCount);
+                    MeterEntryBuffer[
+                        getMtrBuffIxOffset(mrbPopNext, -1)
+                    ].meterImpCount);
 
-        sprintf(msgBuffStr, "%s,%lu,%lu", msgBuffStr, lastEntryFinishTime, lastEntryAccumValue);
+        sprintf(msgBuffStr, "%s,%lu,%lu", msgBuffStr, lastEntryFinishTime,
+                lastEntryAccumValue);
 
         if (SEND_METER_TIMER_ONLY &&
                 newClosedMeterEntries >= METER_MSG_MAX_ELEMENTS)
-            // just send a single 'full' message, fast-forwarding/ ignoring older entries as we are
-            // sending on a timer advance meter buffer read pointer accordingly
-            // if we have more entries than will fit
+            // just send a single 'full' message, fast-forwarding/ ignoring
+            // older entries as we are sending on a timer advance meter buffer
+            // read pointer accordingly if we have more entries than will fit
             mrbPopNext =
                 getMtrBuffIxOffset(mrbPushNext, (-1 - METER_MSG_MAX_ELEMENTS));
 
@@ -2606,25 +2638,30 @@ void checkMeterTimer(){
         static bool gotRead;
         gotRead = true;
 
-        while (gotRead && (i <= max_meter_elements)){
+        while (gotRead && (i <= maxMeterElements)){
             gotRead = popFromMeterBuffer(tmpRead, false);
             if (gotRead){
                 tmpInt = getMeterWhValue(meterBaseValue, tmpRead.meterImpCount);
-                // skip if doesn't follow last entry (lower time/accum values should have rebase, so should
-                // never happen)
-                if (tmpRead.entryStartTime >= lastEntryFinishTime && tmpInt >= lastEntryAccumValue){
+                // skip if doesn't follow last entry (lower time/accum values
+                // should have rebase, so should never happen)
+                if (tmpRead.entryStartTime >= lastEntryFinishTime &&
+                        tmpInt >= lastEntryAccumValue){
                     sprintf(msgBuffStr, "%s;%lu,%lu", msgBuffStr,
-                        // need to get entries actual close time (not start) to determine true
-                        // duration after message's baseline 'time start'
-                        MeterEntryBuffer[mrbPopNext].entryStartTime - tmpRead.entryStartTime,
-                        tmpInt - lastEntryAccumValue);
+                        // need to get entries actual close time (not start) to
+                        // determine true  duration after message's baseline
+                        // 'time start'
+                        MeterEntryBuffer[mrbPopNext].entryStartTime -
+                                tmpRead.entryStartTime,
+                                tmpInt - lastEntryAccumValue);
 
-                    if (CT_ENABLED)
+                    if (cfgCTEnabled == 1)
                         sprintf(msgBuffStr, "%s,%d.%01d", msgBuffStr,
                             (int)tmpRead.rmsCurrent,
                             (int)(tmpRead.rmsCurrent*100)%100);
                 }
-                lastEntryFinishTime = MeterEntryBuffer[mrbPopNext].entryStartTime - tmpRead.entryStartTime;
+                lastEntryFinishTime =
+                        MeterEntryBuffer[mrbPopNext].entryStartTime -
+                        tmpRead.entryStartTime;
                 lastEntryAccumValue = tmpInt;
             }
             i++;
@@ -2778,7 +2815,7 @@ void checkButton(){
                 && (millis() - btnEventStartMillis >= 3000)){
         // button has been pressed and released in >3s => adjustment on
         // for 60s then returns LED rate to 0
-        writeLogLnF(F("PR Adj Mode On"), logNull);
+        writeLogLnF(F("Adj On"), logNull);
         blinkLED(7);
         btnAdjustMode = true;
         btnEventStartMillis = millis();
@@ -2793,14 +2830,13 @@ void checkButton(){
         if (millis() - btnEventStartMillis > 60000) {
             // reset puck LED rate to 0, will need to chenge or reboot to
             // revert to original
-            writeLogLnF(F("PR Adj Mode Off"), logNull);
+            writeLogLnF(F("Adj Off"), logNull);
             btnEventStartMillis = 0ul;
             btnFunctionTimer = 0ul;
             btnAdjustMode = false;
             updatePuckLEDRate(0, false);
         }
     }
-
 }
 
 
@@ -2818,7 +2854,7 @@ void resetFlagsInit(void)
 
 
 void printResetVal(uint8_t resetVal){
-    writeLogF(F("R_FLAGS: 0x"), logNull);
+    writeLogF(F("R_FLG 0x"), logNull);
     Serial.print(resetVal, HEX);
 
     // check for the reset bits.  Symbols are
@@ -2870,7 +2906,7 @@ void setup() {
     // (reduce resistance on line by providing lower resistance path from 3V3)
     pinMode(PR_INTERRUPT_PIN, INPUT);
 
-    if (CT_ENABLED)
+    if ((bool)cfgCTEnabled)
         pinMode(CT_CLAMP_PIN, INPUT);
     else
         pinMode(CT_CLAMP_PIN, INPUT_PULLUP);
@@ -2891,7 +2927,7 @@ void setup() {
 
     printNewLine(logNull);
     printNewLine(logNull);
-    writeLogLnF(F("===BOOT==="), logNull);
+    writeLogLnF(F("=BOOT="), logNull);
     printResetVal(resetFlags);
 
     // get config from EEPROM
@@ -2900,7 +2936,7 @@ void setup() {
 
     // initialise RTC, set time to default (should be overridden by update
     // from gateway); needs to follow applyRadioConfig()
-    writeLogLnF(F("Clock Init"), logDebug);
+    writeLogLnF(F("RTC Init"), logDebug);
     rtc.reset();
 
     checkGWClockSync();
@@ -2923,7 +2959,7 @@ void setup() {
             resetFlags);
     sendRadioMsg(cfgGatewayId, false);
 
-    if (CT_ENABLED)
+    if (cfgCTEnabled == 1)
         emon1.current(CT_CLAMP_PIN, CT_IRMS_CORRECT_MULT);
 
     wdt_enable(WDTO_8S);    //Time for wait before autoreset
