@@ -1597,8 +1597,6 @@ TODO:\ntest/confirm DC
 Wire Wire Line
 	1800 5650 1800 5550
 Wire Wire Line
-	1000 2350 1000 2650
-Wire Wire Line
 	1000 2550 950  2550
 $Comp
 L R R10
@@ -1733,7 +1731,5 @@ Text Label 1850 3600 0    60   ~ 0
 MCU_D3_INT1
 NoConn ~ 9550 4250
 Wire Wire Line
-	1000 2350 800  2350
-Connection ~ 800  2350
-Connection ~ 1000 2550
+	1000 2550 1000 2650
 $EndSCHEMATC

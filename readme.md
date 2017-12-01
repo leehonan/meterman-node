@@ -2,7 +2,7 @@
 
 This repo contains PCB designs and firmware for a low-cost, low-power, wireless LED pulse meter node.  It was designed to read and transmit energy consumption from an electricity smart meter LED pulses, but could be used for other LED pulse counting applications.  
 
-<img src="images/meternode_smartmeter_1.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_smartmeter_1.jpg" alt="Image" width="400"/>
 
 This 'MeterNode' is part of a basic electricity monitoring system described at http://leehonan.com/meterman.  The 'MeterMan' system consists of:
 
@@ -29,16 +29,16 @@ All contents are licenced according to the MIT licence.
 ## MeterNode Overview
 The image below shows a partially-populated MeterNode installed in a project box with a 3xAA battery holder (empty space at bottom left due to omitting CT and DC power sub-circuits).
 
-<img src="images/meternode_install_3.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_install_3.jpg" alt="Image" width="400"/>
 
 The MeterNode's companion 'Puck' is a peripheral pulse sensor (not really in the shape of a puck - although that was the original idea).  It has a photoresistor on one side, and a red 'super bright' LED on the other.  The photoresistor is placed over the smart meter's 'consumption' LED, and connected to the monitoring MeterNode using a TRS or TRRS 3.5mm cable (with a 3.5mm TRRS jack on each PCB).  
 
 <table><tr>
 <td align="center">
-<img src="images/meternode_puck_top.jpg" alt="Image" style="width: 200px;"/>
+<img src="images/meternode_puck_top.jpg" alt="Image" width="200"/>
 </td>
 <td align="center">
-<img src="images/meternode_puck_bottom.jpg" alt="Image" style="width: 200px;"/>
+<img src="images/meternode_puck_bottom.jpg" alt="Image" width="200"/>
 </td>
 </tr></table>
 
@@ -65,10 +65,10 @@ The following images show a fully-populated MeterNode, with a DC jack and CT Cla
 
 <table><tr>
 <td align="center">
-<img src="images/meternode_install_1.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_install_1.jpg" alt="Image" width="400"/>
 </td>
 <td align="center">
-<img src="images/meternode_install_2.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_install_2.jpg" alt="Image" width="400"/>
 </td>
 </tr></table>
 
@@ -94,7 +94,7 @@ The Meternode's operation follows a loop:
 
 ### Metering Approach & Limitations
 
-The MeterNode simply counts consumption LED pulses, and records these against interval entries, with timing according to its onboard clock (RTC).  The pickup/counting is 100% accurate if the sensor is setup properly and not subject to extreme light interference.  A cumulative value is stored and transmitted, allowing for interval update message failures.
+The MeterNode simply counts consumption LED pulses, and records these against interval entries, with timing according to its onboard clock (RTC).  The pickup/counting is 100% accurate if the sensor is setup properly and not subject to extreme light interference.  A cumulative meter value is stored and transmitted in each message, allowing for interval update message failures.
 
 The MeterNode can be set to a notional 'base value' to track the smart meter being monitored.  This allows for easy verification that the MeterNode is tracking accurately, although it is difficult to align the two exactly as the smart meter will only display a coarse value (e.g. to the nearest 100 Wh).  This can be set using a serial command or radio message as described below.
 
@@ -110,14 +110,14 @@ The MeterNode will execute a 'rebase' any time its clock changes, or the meter's
 
 * The base value of the accumulation meter is changed.
 
-* The accumulation meter cycles from its maximum value (4.2 GWh) to 0 Wh.
+* The accumulation meter cycles from its maximum value (4.2 GWh) to 0 Wh.  (Note that smart meters themselves are occasionally zeroed/cycled arbitrarily, e.g. by remote firmware upgrades.)
 
 The MeterNode cannot:
-* Guarantee a message for every 0Wh consumption interval, or indeed guarantee that any message will be sent/received successfully.
+* Guarantee a message element for every 0Wh consumption interval, or indeed guarantee that any message will be sent/received successfully.
 
 * Guarantee a rebase message will be received.  Consuming applications should alert on large increases or reversals in time/meter values.
 
-* Maintain meter readings between reboots.
+* Maintain meter readings between reboots (that would necessitate constant writing to EEPROM, which degrades after ~100K writes).
 
 * Check itself against the meter being tracked.
 
@@ -127,10 +127,10 @@ The MeterNode cannot:
 The MeterNode PCB has the following switches, buttons, headers, and adjustable components.  These are shown below.
 <table><tr>
 <td align="center">
-<img src="images/meternode_install_4.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_install_4.jpg" alt="Image" width="400"/>
 </td>
 <td align="center">
-<img src="images/meternode_install_5.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_install_5.jpg" alt="Image" width="400"/>
 </td>
 </tr></table>
 
@@ -292,8 +292,9 @@ Using the puck LED (which consumes about 1mA) to indicate a meter LED flash will
 ## Implementation - MeterNode Firmware
 For simplicity, the firmware is implemented as a single C++ program (no header file), although it will need supporting libraries to compile.  There is some redundancy versus the companion gateway firmware - the common components may be moved to a library.  Some Arduino library features are used.
 
-The firmware requires a 328P that has been flashed with Optiboot.  It uses practically all of
-available program flash memory.  Depending on configuration, about 400 bytes RAM will remain free at runtime (of 2K).  
+The firmware requires a 328P that has been flashed with Optiboot.  It uses practically all of available program flash memory.  If you are hacking or debugging you'll need to comment out a block of code to make space - e.g. the checkButton() or checkTestMode() methods.
+
+Depending on configuration, about 380 bytes RAM will remain free at runtime (on average, of 2K).  
 
 There are a number of configuration settings at the beginning of the source code.  Particular attention should be paid to the 'Main Config Parameters'.
 
@@ -305,20 +306,20 @@ The code is fairly well-documented so isn't covered further here.
 
 The MeterNode PCB measures 60x92mm and is designed to fit a widely-available [100x68x50mm 'project box'](https://www.banggood.com/White-Plastic-Waterproof-Electronic-Case-PCB-Box-100x68x50mm-p-948109.html), shown below.
 
-<img src="images/meternode_box.jpg" alt="Image" style="width: 400px;"/>
+<img src="images/meternode_box.jpg" alt="Image" width="400"/>
 
 The MeterNode's companion Puck PCB measures 15x20mm and can be mounted in a 3D-printed case (also in this repo).  The puck can be easily aligned with the meter's consumption LED by adhering the base/case only (positioning its hole directly over the LED) before completing the assembly.
 
-<img src="images/meternode_puck_house_1.jpg" alt="Image" style="width: 300px;"/>
+<img src="images/meternode_puck_house_1.jpg" alt="Image" width="400"/>
 
 The images below show regular pucks both assembled and disassembled, along with an alternate puck configuration, where the black 'collet' piece shown (.STL included) can be used to position the LDR sensor in tight positions.  The protruding arm is used to adhere the sensor (e.g. using double-sided tape).  The particular meter that necessitated this was the iCredit 500 which has its LED tucked into a tight corner.
 
 <table><tr>
 <td align="center">
-<img src="images/meternode_puck_house_2.jpg" alt="Image" style="width: 200px;"/>
+<img src="images/meternode_puck_house_2.jpg" alt="Image" width="200"/>
 </td>
 <td align="center">
-<img src="images/meternode_puck_house_3.jpg" alt="Image" style="width: 200px;"/>
+<img src="images/meternode_puck_house_3.jpg" alt="Image" width="200"/>
 </td>
 </tr></table>
 
@@ -326,9 +327,9 @@ The Puck Schematic & PCB is straightforward, so isn't discussed further here - e
 
 ### MeterNode Schematic & PCB
 
-<img src="pcb_meter_node/schematic.png" alt="Image" style="width: 1000px;"/>
+<img src="pcb_meter_node/schematic.png" alt="Image" width="1000"/>
 
-<img src="images/meternode_pcb.jpg" alt="Image" style="width: 800px;"/>
+<img src="images/meternode_pcb.jpg" alt="Image" width="800"/>
 
 The PCB design minimises the use of SMT components, and uses through-hole instead.  When I originally designed the board I wanted to make it 'hobbyist-friendly' with the only SMT component being the easily-solderable RFM69 and RP-SMA connector.  However in subsequent iterations I added the RTC and comparator, where the best choices were SMT.  This makes the board a hodge-podge, and annoying to make in volume (as I have had to for a few experiments). I may do an SMT-only variant in the future.
 
@@ -349,3 +350,66 @@ These could be hacked for another application.
 * The comparator used (TS881) has low quiescent power consumption (as low as 210nA), is simple to use, and is economical.
 
 * The PCB design also contains a basic AC current sensing circuit for use with an optional CT clamp (around an active or neutral wire).  I used the design from [OpenEnergyMonitor](https://learn.openenergymonitor.org/electricity-monitoring/ct-sensors/how-to-build-an-arduino-energy-monitor-measuring-current-only).  This was a late addition to the design as I wanted to avoid looking at their well-established EmonTx project and see how I went my 'rolling my own'.  When I saw how easy the CT was too add I couldn't resist.  Of course, it will often be impractical to install alongside a smart meter unless running a long cable to the puck (as noted above).
+
+The SMT/SMD components are mostly easy to solder with a decent iron and some flux.  The exception is the PCF2123 RTC, where it is very easy to bridge pins.  I suggest:
+* doing SMDs first
+
+* lightly tinning each pad, carefully aligning the IC and soldering a corner pin  
+
+* then applying flux and working your way around
+
+* using a multimeter to test for shorts - via easier to access pads (e.g. for 328P IC)
+
+* inspecting with a loupe or magnifying glass
+
+There are a number of videos on youtube on hand-soldering SMDs.
+
+### Parts List
+
+Includes CT clamp and DC jack.
+
+Approx total is USD$35 (not including labour!).  That assumes you purchase common parts in quantity from Chinese suppliers (e.g. resistors, capacitors).  Otherwise cost will be radically higher.  
+
+| Assembly | Part | Qty | Approx <br>Item Cost<br>(USD) | Comments |
+| :--- |:---| :--- |:---|:---|
+| Puck | PCB | 1 | $0.50 | E.g. 10 for $5 at PCBWay |
+| Puck | Case | 1 | $0.50 | 3D-printed, PLA |
+| Puck | LDR | 1 | $0.20 | 5MM Light-Dependent Resistor AKA Photo Resistor.  I use hamamatsu, much cheaper alternatives available. |
+| Puck | LED | 1 | $0.02 | Super-bright 5mm, 20mA |
+| Puck | TRRS Jack | 1 | $0.05 | PJ320D |
+| Puck Cable | 3.5mm TRS or TRRS | 1 | $1.00 | No need to get TRRS |
+| CT Clamp | YHDC SCT-013-000 | 1 | $8.50 | 100A version |
+| MeterNode | PCB | 1 | $0.50 | E.g. 10 for $5 at PCBWay |
+| MeterNode | Case | 1 | $3.50 | From Banggood, cheaper in bulk |
+| MeterNode | RP-SMA 3dbi Antenna | 1 | $2.90 | I use higher quality ones via RocketScream, cheaper options available. |
+| MeterNode | RP-SMA Connector | 1 | $0.50 |  |
+| MeterNode | Battery Holder | 1 | $1.00 | Yet to find with JST connector so solder on cable, or directly to PCB. |
+| MeterNode | AA Batteries | 3 | $2.00 | Use best you can afford, e.g. lithium |
+| MeterNode | JST-PH connector set | 1 | $0.20 | Can solder wires directly. |
+| MeterNode | TRSS Jacks | 2 | $0.05 | PJ320D |
+| MeterNode | DC Barrel Jack | 1 | $0.10 | 2.1mm |
+| MeterNode | PolyFuse | 1 | $0.20 | 50mA @60V, 5mm spacing |
+| MeterNode | MCP1700 Regulator | 1 | $0.50 | 3.3V, TO-92 |
+| MeterNode | MCU - ATMEGA 328P | 1 | $1.80 | DIP-28, with holder |
+| MeterNode | 16MHz Crystal | 1 | $0.20 | |
+| MeterNode | PCF2123 RTC | 1 | $1.20 | TSSOP1 |
+| MeterNode | 32.768kHz Crystal | 1 | $0.50 | 7pF, +/- 20 ppm, 3.2x1.5mm SMD |
+| MeterNode | RFM69W Module | 1 | $3.00 | SMD |
+| MeterNode | TS881 | 1 | $0.65 | SOT-23-5 |
+| MeterNode | Resistor - 22 Ohm | 1 | $0.01 | 0.25W |
+| MeterNode | Resistor - 1 KOhm | 3 | $0.01 | 0.25W |
+| MeterNode | Resistor - 10 KOhm | 6 | $0.01 | 0.25W |
+| MeterNode | Resistor - 470 KOhm | 2 | $0.01 | 0.25W |
+| MeterNode | Resistor - 1 MOhm | 1 | $0.01 | 0.25W |
+| MeterNode | Resistor - 2.7 MOhm | 1 | $0.01 | 0.25W |
+| MeterNode | Trimpot - 100 KOhm | 1 | $0.50 | Bourns 3296W knock-off |
+| MeterNode | Trimpot - 1 MOhm | 1 | $0.50 | Bourns 3296W knock-off |
+| MeterNode | Capacitor - 22 pF | 3 | $0.01 | Ceramic disc |
+| MeterNode | Capacitor - 100 nF | 8 | $0.01 | Monolithic, Ceramic |
+| MeterNode | Capacitor - 1 uF | 1 | $0.02 | Electrolytic |
+| MeterNode | Capacitor - 1 uF | 2 | $0.01 | Monolithic, Ceramic |
+| MeterNode | Capacitor - 10 uF | 2 | $0.02 | Electrolytic, 4x7mm |
+| MeterNode | Diode - 1N4148 | 2 | $0.01 |  |
+| MeterNode | Micro SPST Switch | 1 | $0.15 | 3P |
+| MeterNode | 6x6mm pushbutton | 2 | $0.02 |  |
+| MeterNode | Pin Header | 1 | $0.02 | 6P, 2.54mm pitch |
