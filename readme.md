@@ -16,7 +16,7 @@ This 'MeterNode' is part of a basic electricity monitoring system described at h
 
 This (MeterNode) repo consists of:
 
-* The MeterNode PCB design (authored in KiCad).  This mounts in a small box and is powered by 3xAA Batteries or a DC adapter.  It attaches to a small 'puck' sensor using a 3.5mm audio cable.
+* The MeterNode PCB design (authored in KiCad).  This mounts in a small 3D-printed box and is powered by 3xAA Batteries or a DC adapter.  It attaches to a small 'puck' sensor using a 3.5mm audio cable.
 
 * The MeterNode Puck PCB design (also KiCad).
 
@@ -232,7 +232,7 @@ The following commands are available through the serial console (case-insensitiv
 | ledt |  Print/set puck LED time (set with LEDT=[time in millis]).  Is max duration of each LED pulse emitted by the puck in millis. Setting to 0 will cause to flash in unison with meter.  Maximum of 3000, but puck LED will always go low/off on falling edge of meter's pulse. |
 
 
-### Radio Protocol
+### <a name="radproto"></a> Radio Protocol
 The MeterNode uses the [RadioHead Library](http://www.airspayce.com/mikem/arduino/RadioHead/), and 'Reliable Datagrams' for all messaging.
 
 Messages are AES-128 encrypted, with a maximum payload of 61 bytes.  Fields are comma-delimited, records semi-colon-delimited (only used for meter updates).
@@ -310,7 +310,7 @@ The MeterNode PCB measures 60x92mm and is designed to fit a widely-available [10
 
 The MeterNode's companion Puck PCB measures 15x20mm and can be mounted in a 3D-printed case (also in this repo).  The puck can be easily aligned with the meter's consumption LED by adhering the base/case only (positioning its hole directly over the LED) before completing the assembly.
 
-<img src="images/meternode_puck_house_1.jpg" alt="Image" width="400"/>
+<img src="images/meternode_puck_house_1.jpg" alt="Image" width="300"/>
 
 The images below show regular pucks both assembled and disassembled, along with an alternate puck configuration, where the black 'collet' piece shown (.STL included) can be used to position the LDR sensor in tight positions.  The protruding arm is used to adhere the sensor (e.g. using double-sided tape).  The particular meter that necessitated this was the iCredit 500 which has its LED tucked into a tight corner.
 
