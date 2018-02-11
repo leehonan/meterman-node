@@ -60,7 +60,6 @@
     IN THE SOFTWARE.
  */
 
-
 // *****************************************************************************
 //    Main Config Parameters
 //    'DEF_*' constants are defaults for configuration variables of the same
@@ -88,7 +87,7 @@
 // https://github.com/openenergymonitor/EmonLib
 #include <EmonLib.h>
 
-static const int8_t FW_VERSION = 7;
+static const int8_t FW_VERSION = 8;
 
 // Whether a CT clamp is installed
 uint8_t cfgCTEnabled = 0;
@@ -440,11 +439,11 @@ static const float RADIO_FREQ = 915.0f;
 // (unless running on DC adapter and not concerned with RF 'noise').
 
 //Using FSK, Whitening, bit rate = 125kbps, modulation frequency = 125kHz.
-static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb125Fd125;
+static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb9_6Fd19_2;
 
 // Transmit and Receive timeouts (millis).  Long timeouts can block processing
 //  if gateway not up.
-static const uint16_t TX_TIMEOUT = 500;
+static const uint16_t TX_TIMEOUT = 800;
 static const uint16_t RX_TIMEOUT = 800;
 
 // Radio Driver and Message Manager
@@ -1953,8 +1952,8 @@ void checkSerialInput() {
             uint8_t addr2 = 0;
             uint8_t addr3 = 0;
             uint8_t addr4 = 0;
-            if(sscanf(tmpStr, "%hhu.%hhu.%hhu.%hhu",
-                    &addr1, &addr2, &addr3, &addr4) != 4){
+            if(sscanf(tmpStr, "%" SCNu8 ".%" SCNu8 ".%" SCNu8 ".%" SCNu8,
+                            &addr1, &addr2, &addr3, &addr4) != 4){
                 printPrompt();
                 writeLogLnF(F("Bad Addr"), logNull);
             }
@@ -2242,7 +2241,7 @@ void processMsgRecv(){
          tmpPollRate = 0ul;
          tmpPollPeriod = 0ul;
 
-         sscanf (msgBuffStr, "%*[^,],%lu,%lu,%hhd", &tmpPollRate,
+         sscanf (msgBuffStr, "%*[^,],%lu,%lu,%" SCNd8, &tmpPollRate,
                  &tmpPollPeriod, &lastRSSIAtGateway);
 
          if (tmpPollRate >= 10 && tmpPollRate <= 600
@@ -2267,7 +2266,7 @@ void processMsgRecv(){
      else if (strStartsWithP(msgBuffStr, RMSG_MVAI) == 1){
         // get new meter value from message
         static uint32_t newMeterValue = 0ul;
-        sscanf (msgBuffStr, "%*[^,],%lu,%hhd", &newMeterValue,
+        sscanf (msgBuffStr, "%*[^,],%lu,%" SCNd8, &newMeterValue,
                 &lastRSSIAtGateway);
 
         if (newMeterValue > 0 && newMeterValue < METER_MAX_BASE_VALUE){
@@ -2290,7 +2289,7 @@ void processMsgRecv(){
     else if (strStartsWithP(msgBuffStr, RMSG_MINI) == 1){
             // get new meter interval from message
             static uint32_t newInterval = 0ul;
-            sscanf (msgBuffStr, "%*[^,],%lu,%hhd", &newInterval,
+            sscanf (msgBuffStr, "%*[^,],%lu,%" SCNd8, &newInterval,
                     &lastRSSIAtGateway);
 
             if (newInterval >= 0 && newInterval <= UINT8_MAX){
@@ -2316,7 +2315,7 @@ void processMsgRecv(){
         ledPulseRate = 0ul;
         ledPulseTime = 0ul;
 
-        sscanf (msgBuffStr, "%*[^,],%lu,%lu,%hhd", &ledPulseRate,
+        sscanf (msgBuffStr, "%*[^,],%lu,%lu,%" SCNd8, &ledPulseRate,
                 &ledPulseTime, &lastRSSIAtGateway);
 
         if (ledPulseRate <= UINT8_MAX && ledPulseTime <= 3000){
@@ -2344,7 +2343,7 @@ void processMsgRecv(){
         static uint8_t align;
         reqTime = 0ul;
         respTime = 0ul;
-        sscanf (msgBuffStr, "%*[^,],%lu,%lu,%hhu,%hhd", &reqTime, &respTime,
+        sscanf (msgBuffStr, "%*[^,],%lu,%lu,%" SCNu8 ",%" SCNu8, &reqTime, &respTime,
                     &align, &lastRSSIAtGateway);
         // use time provided if message is not stale (within drift) and
         // time provided is outside drift tolerance (SYNC_TIME_MAX_DRIFT_SEC
@@ -2372,7 +2371,7 @@ void processMsgRecv(){
     // format: MNOI,<last_node_rssi>
     // e.g.: MNOI,-70
     else if (strStartsWithP(msgBuffStr, RMSG_MNOI) == 1){
-        sscanf (msgBuffStr, "%*[^,],%hhd", &lastRSSIAtGateway);
+        sscanf (msgBuffStr, "%*[^,],%" SCNd8, &lastRSSIAtGateway);
     }
 
     else if (strStartsWithP(msgBuffStr, RMSG_GMSG) == 1){
