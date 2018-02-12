@@ -87,7 +87,7 @@
 // https://github.com/openenergymonitor/EmonLib
 #include <EmonLib.h>
 
-static const int8_t FW_VERSION = 8;
+static const int8_t FW_VERSION = 9;
 
 // Whether a CT clamp is installed
 uint8_t cfgCTEnabled = 0;
@@ -108,7 +108,7 @@ static const LogLev DEF_LOG_LEVEL = logInfo;
 // if using HW/HCW module, must set to true
 static const bool RADIO_HIGH_POWER = false;     // RFM69W is standard
 
-// Initial power level in dBm.  Use -18 to +13 for W/CW, -14 to +20 for HW/HCW:
+// Initial power level in dBm.  Use -18 to +13 for W/CW, -2 to +20 for HW/HCW:
 static const int8_t DEF_TX_POWER = 0;
 
 // Target RSSI for auto-tuning, 0 is disable auto-tuning
@@ -434,11 +434,11 @@ static const float RADIO_FREQ = 915.0f;
 // Modem config per RadioHead docs.  Note that lower rates (strangely) are
 // unreliable with latest board.  FSK seems most reliable.
 //
-// From FSK_Rb4_8Fd9_6 through to FSK_Rb125Fd125 work well (could go higher).
+// From FSK_Rb9_6Fd19_2 through to FSK_Rb125Fd125 work well (could go higher).
 // Use fastest rate that yields acceptable range and reasonably low TX power
 // (unless running on DC adapter and not concerned with RF 'noise').
 
-//Using FSK, Whitening, bit rate = 125kbps, modulation frequency = 125kHz.
+//Using FSK, Whitening, bit rate = 9.6kbps, modulation frequency = 19.2kHz.
 static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb9_6Fd19_2;
 
 // Transmit and Receive timeouts (millis).  Long timeouts can block processing
@@ -1043,7 +1043,7 @@ void checkStaleEntry(){
 
      // check if entries need to be aligned to mm:00
      if (alignReads && getNowTimestampSec() >= alignReadingFrom){
-         writeLogLnF(F("Algn=mm:00"), logInfo);
+         writeLogLnF(F("Algn>:00"), logInfo);
          closeEntryCreateNew((bool)cfgCTEnabled);
          // overwrite current entry's timestamp - coarse but simple
          MeterEntryBuffer[mrbPushNext].entryStartTime = alignReadingFrom;
@@ -1604,11 +1604,11 @@ void applyRadioConfig(){
     msgManager.setTimeout(TX_TIMEOUT);
 
     if (!radio.setModemConfig(MODEM_CONFIG)) {
-        writeLogLnF(F("ModemCfg fail"), logError);
+        writeLogLnF(F("Modem fail"), logError);
     }
 
     if (!radio.setFrequency(RADIO_FREQ)) {
-        writeLogLnF(F("SetFreq fail"), logError);
+        writeLogLnF(F("Freq fail"), logError);
     }
 
     radio.setTxPower(cfgTXPower, RADIO_HIGH_POWER);
@@ -1794,7 +1794,7 @@ void checkSerialInput() {
         if (strStartsWithP(serInBuff, SER_CMD_DUMP) == 1){
             tmpRead = MeterEntryBuffer[mrbPushNext];
             printPrompt();
-            writeLogF(F("Base Val="), logNull);
+            writeLogF(F("Base="), logNull);
             printWhValue(getMeterWhValue(meterBaseValue, 0), logNull);
 
             writeLogF(F(", Val="), logNull);
@@ -1827,15 +1827,15 @@ void checkSerialInput() {
             printMeterBuffer();
 
             printPrompt();
-            writeLogF(F("Batt (mV)="), logNull);
+            writeLogF(F("Batt="), logNull);
             writeLogLn(vinVoltageMV, logNull);
 
             printPrompt();
-            writeLogF(F("Free RAM="), logNull);
+            writeLogF(F("RAM="), logNull);
             writeLogLn(freeRAM(), logNull);
 
             printPrompt();
-            writeLogF(F("Can Slp="), logNull);
+            writeLogF(F("Slp="), logNull);
             writeLogLnF(canSleep ? F("Y"): F("N"), logNull);
 
             printPrompt();
@@ -1983,7 +1983,7 @@ void checkSerialInput() {
             tmpInt = strtoul(cmdVal,NULL,0);
             if (tmpInt < 1 || tmpInt > 253){
                 printPrompt();
-                writeLogLnF(F("Bad Gway Id"), logNull);
+                writeLogLnF(F("Bad GwId"), logNull);
             }
             else{
                 cfgGatewayId = tmpInt;
@@ -1996,7 +1996,7 @@ void checkSerialInput() {
         // print gateway id, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_GWID) >= 1){
             printPrompt();
-            writeLogF(F("Gway Id="), logNull);
+            writeLogF(F("GwId="), logNull);
             writeLogLn(cfgGatewayId, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
@@ -2009,7 +2009,7 @@ void checkSerialInput() {
             tmpInt = strtoul(cmdVal,NULL,0);
             if (tmpInt < 1 || tmpInt > 253){
                 printPrompt();
-                writeLogLnF(F("Bad Node Id"), logNull);
+                writeLogLnF(F("Bad NoId"), logNull);
             }
             else{
                 cfgNodeId = tmpInt;
@@ -2022,7 +2022,7 @@ void checkSerialInput() {
         // print node id, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_NOID) >= 1){
             printPrompt();
-            writeLogF(F("Node Id="), logNull);
+            writeLogF(F("NoId="), logNull);
             writeLogLn(cfgNodeId, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
@@ -2054,7 +2054,7 @@ void checkSerialInput() {
 
             if (! isTXPowValid(txPow)){
                 printPrompt();
-                writeLogLnF(F("Bad TX Pow"), logNull);
+                writeLogLnF(F("Bad TXPow"), logNull);
             }
             else{
                 changeTXPower(txPow, true);
@@ -2072,10 +2072,10 @@ void checkSerialInput() {
             writeLogF(F("Tgt RSSI="), logNull);
             writeLogLn(cfgTgtRSSI, logNull);
             printPrompt();
-            writeLogF(F("Last Gway SSI="), logNull);
+            writeLogF(F("Last Gw SSI="), logNull);
             writeLogLn(lastRSSIAtNode, logNull);
             printPrompt();
-            writeLogF(F("Avg RSSI@Gway="), logNull);
+            writeLogF(F("Avg RSSI@Gw="), logNull);
             writeLogLn(averageRSSIAtGateway, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
@@ -2142,7 +2142,7 @@ void checkSerialInput() {
         // print meter interval, also echoes after being set
         if (cmdStatus == dump || strStartsWithP(serInBuff, SER_CMD_MTRI) >= 1){
             printPrompt();
-            writeLogF(F("Mtr Interval="), logNull);
+            writeLogF(F("Mtr Intvl="), logNull);
             writeLogLn(cfgMeterInterval, logNull);
             if (cmdStatus != dump)
                 cmdStatus = valid;
@@ -2154,7 +2154,7 @@ void checkSerialInput() {
                 if (testMode)
                     canSleep = false;
                 printPrompt();
-                writeLogF(F("Test="), logNull);
+                writeLogF(F("Tst="), logNull);
                 writeLogLnF(testMode ? F("ON") : F("OFF"), logNull);
                 cmdStatus = valid;
         }
@@ -2223,7 +2223,7 @@ void processMsgRecv(){
      */
 
      lastRSSIAtNode = radio.lastRssi();
-     writeLogF(F("Got msg: "), logDebug);
+     writeLogF(F("Got: "), logDebug);
      writeLog((char*)radioMsgBuff, logDebug);
      writeLogF(F(". RSSI = "), logDebug);
      writeLogLn(lastRSSIAtNode, logDebug);
@@ -2978,6 +2978,7 @@ void loop() {
         // do every time
         checkSerialInput();
         checkButton();
+
         checkTestMode();
         wdt_reset();
 
