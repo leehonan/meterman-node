@@ -87,7 +87,7 @@
 // https://github.com/openenergymonitor/EmonLib
 #include <EmonLib.h>
 
-static const int8_t FW_VERSION = 9;
+static const int8_t FW_VERSION = 10;
 
 // Whether a CT clamp is installed
 uint8_t cfgCTEnabled = 0;
@@ -109,10 +109,11 @@ static const LogLev DEF_LOG_LEVEL = logInfo;
 static const bool RADIO_HIGH_POWER = false;     // RFM69W is standard
 
 // Initial power level in dBm.  Use -18 to +13 for W/CW, -2 to +20 for HW/HCW:
-static const int8_t DEF_TX_POWER = 0;
+static const int8_t DEF_TX_POWER = 13;
 
 // Target RSSI for auto-tuning, 0 is disable auto-tuning
-static const int8_t DEF_TGT_RSSI = -75;
+// TODO: reenable
+static const int8_t DEF_TGT_RSSI = 0;
 
 // Node ID and Gateway ID.  Gateway is usually 1.  Node between 2 and 254.
 // 255 is broadcast (RadioHead => RH_BROADCAST_ADDRESS).
@@ -440,11 +441,13 @@ static const float RADIO_FREQ = 915.0f;
 
 //Using FSK, Whitening, bit rate = 9.6kbps, modulation frequency = 19.2kHz.
 static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb9_6Fd19_2;
+// static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb4_8Fd9_6;
+// static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb2_4Fd4_8;
 
 // Transmit and Receive timeouts (millis).  Long timeouts can block processing
 //  if gateway not up.
-static const uint16_t TX_TIMEOUT = 800;
-static const uint16_t RX_TIMEOUT = 800;
+static const uint16_t TX_TIMEOUT = 1000;
+static const uint16_t RX_TIMEOUT = 1000;
 
 // Radio Driver and Message Manager
 RH_RF69 radio(RADIO_SS_PIN, RADIO_INTERRUPT_PIN);
@@ -2432,6 +2435,7 @@ void sendRadioMsg(uint8_t recipient, bool checkReply){
     // Send message with an ack timeout as specified by TX_TIMEOUT
     if (msgManager.sendtoWait(radioMsgBuff, lenBuff, recipient)){
         txConsFailCount = 0;
+        wdt_reset();
         // Wait for a reply from the Gateway if instructed to
         if (checkReply &&
             msgManager.recvfromAckTimeout(radioMsgBuff, &lenBuff, RX_TIMEOUT,
