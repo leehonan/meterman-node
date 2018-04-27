@@ -106,14 +106,13 @@ typedef enum {
 static const LogLev DEF_LOG_LEVEL = logInfo;
 
 // if using HW/HCW module, must set to true
-static const bool RADIO_HIGH_POWER = false;     // RFM69W is standard
+static const bool RADIO_HIGH_POWER = true;     // RFM69W is standard
 
 // Initial power level in dBm.  Use -18 to +13 for W/CW, -2 to +20 for HW/HCW:
 static const int8_t DEF_TX_POWER = 13;
 
-// Target RSSI for auto-tuning, 0 is disable auto-tuning
-// TODO: reenable
-static const int8_t DEF_TGT_RSSI = 0;
+// Target RSSI for auto-tuning, 0 is disable auto-tuning, -75 typical conservative
+static const int8_t DEF_TGT_RSSI = -75;
 
 // Node ID and Gateway ID.  Gateway is usually 1.  Node between 2 and 254.
 // 255 is broadcast (RadioHead => RH_BROADCAST_ADDRESS).
@@ -440,9 +439,9 @@ static const float RADIO_FREQ = 915.0f;
 // (unless running on DC adapter and not concerned with RF 'noise').
 
 //Using FSK, Whitening, bit rate = 9.6kbps, modulation frequency = 19.2kHz.
-static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb9_6Fd19_2;
+// static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb9_6Fd19_2;
 // static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb4_8Fd9_6;
-// static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb2_4Fd4_8;
+static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb2_4Fd4_8;
 
 // Transmit and Receive timeouts (millis).  Long timeouts can block processing
 //  if gateway not up.
