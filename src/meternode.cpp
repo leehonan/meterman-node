@@ -87,7 +87,7 @@
 // https://github.com/openenergymonitor/EmonLib
 #include <EmonLib.h>
 
-static const int8_t FW_VERSION = 9;
+static const int8_t FW_VERSION = 10;
 
 // Whether a CT clamp is installed
 uint8_t cfgCTEnabled = 0;
@@ -109,9 +109,9 @@ static const LogLev DEF_LOG_LEVEL = logInfo;
 static const bool RADIO_HIGH_POWER = false;     // RFM69W is standard
 
 // Initial power level in dBm.  Use -18 to +13 for W/CW, -2 to +20 for HW/HCW:
-static const int8_t DEF_TX_POWER = 0;
+static const int8_t DEF_TX_POWER = 13;
 
-// Target RSSI for auto-tuning, 0 is disable auto-tuning
+// Target RSSI for auto-tuning, 0 is disable auto-tuning, -75 typical conservative
 static const int8_t DEF_TGT_RSSI = -75;
 
 // Node ID and Gateway ID.  Gateway is usually 1.  Node between 2 and 254.
@@ -432,19 +432,26 @@ static const int16_t CT_NUM_SAMPLES = 1480;   // proportionate to AC cycle, freq
 static const float RADIO_FREQ = 915.0f;
 
 // Modem config per RadioHead docs.  Note that lower rates (strangely) are
-// unreliable with latest board.  FSK seems most reliable.
+// unreliable with latest board.  FS seems most reliable.
 //
 // From FSK_Rb9_6Fd19_2 through to FSK_Rb125Fd125 work well (could go higher).
 // Use fastest rate that yields acceptable range and reasonably low TX power
 // (unless running on DC adapter and not concerned with RF 'noise').
 
 //Using FSK, Whitening, bit rate = 9.6kbps, modulation frequency = 19.2kHz.
-static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb9_6Fd19_2;
+// static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb9_6Fd19_2;
+static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb4_8Fd9_6;
+// static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb2_4Fd4_8;
+// static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::FSK_Rb2Fd5;
+// static const RH_RF69::ModemConfigChoice MODEM_CONFIG = RH_RF69::GFSK_Rb4_8Fd9_6;
 
 // Transmit and Receive timeouts (millis).  Long timeouts can block processing
-//  if gateway not up.
-static const uint16_t TX_TIMEOUT = 800;
-static const uint16_t RX_TIMEOUT = 800;
+//  if gateway not up.  Erratic if > 1000.  Varied up to x2 randomly.
+//  HP - 300/400 OK
+//  LP - 500/2/800 OK @ FSK_Rb2Fd5
+static const uint16_t TX_TIMEOUT = 500;
+static const uint8_t TX_RETRIES = 3;
+static const uint16_t RX_TIMEOUT = 1000;
 
 // Radio Driver and Message Manager
 RH_RF69 radio(RADIO_SS_PIN, RADIO_INTERRUPT_PIN);
@@ -1602,6 +1609,7 @@ void applyRadioConfig(){
 
     msgManager.setThisAddress(cfgNodeId);
     msgManager.setTimeout(TX_TIMEOUT);
+    msgManager.setRetries(TX_RETRIES);
 
     if (!radio.setModemConfig(MODEM_CONFIG)) {
         writeLogLnF(F("Modem fail"), logError);
@@ -2221,7 +2229,7 @@ void processMsgRecv(){
     /**
        Processes and dispatches a newly-received message.
      */
-
+     wdt_reset();
      lastRSSIAtNode = radio.lastRssi();
      writeLogF(F("Got: "), logDebug);
      writeLog((char*)radioMsgBuff, logDebug);
@@ -2428,10 +2436,10 @@ void sendRadioMsg(uint8_t recipient, bool checkReply){
     writeLogLn(msgBuffStr, logInfo);
     memcpy(radioMsgBuff, msgBuffStr, strlen(msgBuffStr));
     wdt_reset();
-
     // Send message with an ack timeout as specified by TX_TIMEOUT
     if (msgManager.sendtoWait(radioMsgBuff, lenBuff, recipient)){
         txConsFailCount = 0;
+        wdt_reset();
         // Wait for a reply from the Gateway if instructed to
         if (checkReply &&
             msgManager.recvfromAckTimeout(radioMsgBuff, &lenBuff, RX_TIMEOUT,
@@ -2780,62 +2788,64 @@ void checkButton(){
 
         If not sleeping, short press of < 1s will set sleep on (5 flashes).
         Release as soon as flashing starts.
+
+        TODO: UNCOMMENT IF NEEDED - will need to make space elsewhere!
     */
-    static bool btnDown = false;
-    // button is pin 6 with external pull-up (on is LOW)
-    btnDown = ((PIND & B01000000) == B00000000);
-
-    if (canSleep && btnDown){
-        // button has been pressed while asleep => wake up!
-        toggleSleepMode();
-        blinkLED(3);
-        btnEventStartMillis = 0ul;
-    }
-
-    // new event...
-    else if (btnDown && btnEventStartMillis == 0 && !btnAdjustMode)
-        btnEventStartMillis = millis();
-
-    else if (!canSleep && !btnAdjustMode && !btnDown && btnEventStartMillis > 0
-                && (millis() - btnEventStartMillis <= 1000)){
-        // button has been pressed and released in <= 1s => sleep on/off toggle
-        toggleSleepMode();
-        blinkLED(5);
-        btnEventStartMillis = 0ul;
-    }
-
-    else if (!canSleep && !btnAdjustMode && !btnDown && btnEventStartMillis > 0
-            && (millis() - btnEventStartMillis > 1000)
-            && (millis() - btnEventStartMillis < 3000))
-        // button has been pressed and released in 1-3s => ignore
-        btnEventStartMillis = 0ul;
-
-    else if (!canSleep && !btnDown && !btnAdjustMode && btnEventStartMillis > 0
-                && (millis() - btnEventStartMillis >= 3000)){
-        // button has been pressed and released in >3s => adjustment on
-        // for 60s then returns LED rate to 0
-        writeLogLnF(F("Adj On"), logNull);
-        blinkLED(7);
-        btnAdjustMode = true;
-        btnEventStartMillis = millis();
-        btnFunctionTimer = btnEventStartMillis;
-        updatePuckLEDRate(1, false);
-        cfgPuckLEDTime = 0;
-    }
-
-    // if in adjust mode, output voltage every 60s
-    if (btnAdjustMode && (millis() - btnFunctionTimer >= 1000)){
-        btnFunctionTimer = millis();
-        if (millis() - btnEventStartMillis > 60000) {
-            // reset puck LED rate to 0, will need to chenge or reboot to
-            // revert to original
-            writeLogLnF(F("Adj Off"), logNull);
-            btnEventStartMillis = 0ul;
-            btnFunctionTimer = 0ul;
-            btnAdjustMode = false;
-            updatePuckLEDRate(0, false);
-        }
-    }
+    // static bool btnDown = false;
+    // // button is pin 6 with external pull-up (on is LOW)
+    // btnDown = ((PIND & B01000000) == B00000000);
+    //
+    // if (canSleep && btnDown){
+    //     // button has been pressed while asleep => wake up!
+    //     toggleSleepMode();
+    //     blinkLED(3);
+    //     btnEventStartMillis = 0ul;
+    // }
+    //
+    // // new event...
+    // else if (btnDown && btnEventStartMillis == 0 && !btnAdjustMode)
+    //     btnEventStartMillis = millis();
+    //
+    // else if (!canSleep && !btnAdjustMode && !btnDown && btnEventStartMillis > 0
+    //             && (millis() - btnEventStartMillis <= 1000)){
+    //     // button has been pressed and released in <= 1s => sleep on/off toggle
+    //     toggleSleepMode();
+    //     blinkLED(5);
+    //     btnEventStartMillis = 0ul;
+    // }
+    //
+    // else if (!canSleep && !btnAdjustMode && !btnDown && btnEventStartMillis > 0
+    //         && (millis() - btnEventStartMillis > 1000)
+    //         && (millis() - btnEventStartMillis < 3000))
+    //     // button has been pressed and released in 1-3s => ignore
+    //     btnEventStartMillis = 0ul;
+    //
+    // else if (!canSleep && !btnDown && !btnAdjustMode && btnEventStartMillis > 0
+    //             && (millis() - btnEventStartMillis >= 3000)){
+    //     // button has been pressed and released in >3s => adjustment on
+    //     // for 60s then returns LED rate to 0
+    //     writeLogLnF(F("Adj On"), logNull);
+    //     blinkLED(7);
+    //     btnAdjustMode = true;
+    //     btnEventStartMillis = millis();
+    //     btnFunctionTimer = btnEventStartMillis;
+    //     updatePuckLEDRate(1, false);
+    //     cfgPuckLEDTime = 0;
+    // }
+    //
+    // // if in adjust mode, output voltage every 60s
+    // if (btnAdjustMode && (millis() - btnFunctionTimer >= 1000)){
+    //     btnFunctionTimer = millis();
+    //     if (millis() - btnEventStartMillis > 60000) {
+    //         // reset puck LED rate to 0, will need to chenge or reboot to
+    //         // revert to original
+    //         writeLogLnF(F("Adj Off"), logNull);
+    //         btnEventStartMillis = 0ul;
+    //         btnFunctionTimer = 0ul;
+    //         btnAdjustMode = false;
+    //         updatePuckLEDRate(0, false);
+    //     }
+    // }
 }
 
 
